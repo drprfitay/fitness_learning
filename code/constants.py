@@ -47,7 +47,7 @@ ENCODER_WEIGHTS_FILE_NAME = "structure_encoder.pth"
 DECODER_WEIGHTS_FILE_NAME = "structure_decoder.pth"
 
 USE_HF = False
-HF_TOKEN = "___"
+
 
 ENCODER_D_MODEL=1024
 ENCODER_N_HEADS=1
