@@ -20,7 +20,7 @@ from esm.models.esm3 import ESM3
 from esm.sdk.api import ESM3InferenceClient, ESMProtein, GenerationConfig
 
 
-huggingface_hub.login(token="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")
+#huggingface_hub.login(token="___")
 
 
 model: ESM3InferenceClient = ESM3.from_pretrained("esm3_sm_open_v1").to("cpu") 
