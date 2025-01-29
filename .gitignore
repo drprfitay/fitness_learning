@@ -1,0 +1,8 @@
+# Data
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*.so
+
+data/
+*.pth
