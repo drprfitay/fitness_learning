@@ -24,6 +24,7 @@ RAW_TENSORS_PATH = "%s/raw_tensors" % DATA_PATH
 RAW_TENSORS_ENERGIES_PATH = "%s/energies" % RAW_TENSORS_PATH
 TRAIN_TEST_SPLITS_PATH = "%s/train_test_splits/" % CONFIGURATION_PATH
 SEQ_SPACES_PATH = "%s/sequence_spaces/" % CONFIGURATION_PATH
+ZIP_PATH = "%s/zip/" % DATA_PATH 
 
 DEFAULT_LOG_FILE_PATH =  "%s/%s" % (LOG_PATH, "default_log.csv")
 SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "gfp_sequence_dataset.csv")
@@ -47,7 +48,7 @@ ENCODER_WEIGHTS_FILE_NAME = "structure_encoder.pth"
 DECODER_WEIGHTS_FILE_NAME = "structure_decoder.pth"
 
 USE_HF = False
-HF_TOKEN = "___"
+HF_TOKEN = "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"
 
 ENCODER_D_MODEL=1024
 ENCODER_N_HEADS=1
