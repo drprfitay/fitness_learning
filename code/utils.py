@@ -160,7 +160,7 @@ def gfp_rosetta_job_generator(indices, is_sequence_indices, gen_pdb, override=Fa
    
 
 
-def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False):
+def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False, return_full_path=False):
     if not is_fulL_path:
         full_seq_space_file = "%s/%s" % (TRAIN_TEST_SPLITS_PATH, seq_space_file)
 
@@ -176,9 +176,22 @@ def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False):
     tokens_generated = os.listdir(RAW_TENSORS_PATH)
     energies_generated = os.listdir(RAW_TENSORS_ENERGIES_PATH)
 
+
+
     all_energy_files = ["energies_%s.pth" % seq for seq in sequences_in_set]
     all_pdb_files  =  ["%s_refined.pdb" % seq for seq in sequences_in_set]
     all_esm_tensor_files  = ["tokens_%s.pth" % seq for seq in sequences_in_set]
+
+
+    if return_full_path:
+        pdb_generated = ["%s/%s" % (PDB_ROSETTA_SCORES_PATH, f) for f in  pdb_generated]
+        tokens_generated = ["%s/%s" % (RAW_TENSORS_PATH, f) for f in  tokens_generated]
+        energies_generated = ["%s/%s" % (RAW_TENSORS_ENERGIES_PATH, f) for f in  energies_generated]
+    
+        all_pdb_files = ["%s/%s" % (PDB_ROSETTA_SCORES_PATH, f) for f in  all_pdb_files]
+        all_esm_tensor_files = ["%s/%s" % (RAW_TENSORS_PATH, f) for f in  all_esm_tensor_files]
+        all_energy_files = ["%s/%s" % (RAW_TENSORS_ENERGIES_PATH, f) for f in  all_energy_files]
+
 
     results = {"all_energy_files" : all_energy_files,
                 "all_pdb_files" : all_pdb_files,

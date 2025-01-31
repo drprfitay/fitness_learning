@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import subprocess
 import argparse
 import re
+import shutil
 import pickle
 
 
@@ -33,11 +34,13 @@ parser.add_argument("--override", type=bool, help="Override generations", requir
 parser.add_argument("--send_to_cluster", type=bool, help="Sends entire operation to cluster", required=False, default=False)
 parser.add_argument("--seq_space_file", type=str, help='Path to designed sequence space for splitting train/test, Should be a .pkl file', required=False)
 parser.add_argument("--is_seq_space_full_path", type=bool, help="Specifies whether 'seq_space_path' is full path or relative to sequence spaces folder (SEQ_SPACES_PATH in constants)", required=False, default=False)
-parser.add_argument("--scheduler", type=str, help="Specifies the train dataset to operate on (SEQ_SPACES_PATH in constants)", required=False, default=None)
-parser.add_argument("--run_statistics", type=str, help="Specifies the train dataset to operate on (SEQ_SPACES_PATH in constants); similar to scheduling", required=False, default=None)
+parser.add_argument("--scheduler", type=str, help="Specifies the dataset to operate on (SEQ_SPACES_PATH in constants)", required=False, default=None)
+parser.add_argument("--run_statistics", type=str, help="Specifies the dataset to run statistics on (SEQ_SPACES_PATH in constants); similar to scheduling", required=False, default=None)
+parser.add_argument("--zip", type=str, help="Specifies the dataset to zip (SEQ_SPACES_PATH in constants); similar to scheduling", required=False, default=None)
 parser.add_argument("--execute_missing_sequences", type=str, help="When scheduling, specifies whether to use missing sequences that were not generated with respect to 'seq_space_path' (P: PDBs, E: Energies, T: Tokens)", required=False, default=None)
 parser.add_argument("--test_dataset", type=bool, help="When scheduling, specifies whether operating on test dataset and not train", required=False, default=False)
 parser.add_argument("--njobs", type=int, help="When scheduling, specifies number of jobs ", required=False, default=100)
+parser.add_argument("--setup", type=bool, help="Sets up the environment and creates directories", required=False, default=False)
 
 #parser.add_argument("--gen_", type=str, help="Specifies the train dataset to operate on (SEQ_SPACES_PATH in constants)", required=False, default=None)
 
@@ -669,10 +672,93 @@ def send_job_to_cluster():
 
 
 
+if args.zip is not None:
 
+    if args.is_seq_space_full_path:
+        print("Please specify the sequence space in SEQ_SPACE folder and do not provide full path when zipping")
+        exit()
+    
+    
+    results = get_missing_sequences(args.is_seq_space_full_path, args.zip, args.test_dataset, return_full_path = True)
+    
+    pdb_generated = results["pdb_generated"]
+    tokens_generated = results["tokens_generated"]
+    energies_generated = results["energies_generated"]
+    all_energy_files = results["all_energy_files"]
+    all_pdb_files = results["all_pdb_files"]
+    all_esm_tensor_files = results["all_esm_tensor_files"]
+
+    pdbs = np.array(all_pdb_files)[np.isin(all_pdb_files, pdb_generated)]
+    esm_tokens = np.array(all_esm_tensor_files)[np.isin(all_esm_tensor_files, tokens_generated)]
+    energy_tensors = np.array(all_energy_files)[np.isin(all_energy_files, energies_generated)]
+
+    if VERBOSE:
+        print("Zipping up dataset %s files included: " % args.zip)
+        print("\t %d pdb files " % len(pdbs))
+        print("\t %d esm token files " % len(esm_tokens))
+        print("\t %d rosetta energy files " % len(energy_tensors))
+
+    work_zip_path = "%s/%s_zipped/" % (ZIP_PATH, args.zip)
+    os.makedirs(work_zip_path, exist_ok = True)
+    tmp_directory = "%s/files" % work_zip_path
+
+    if os.path.exists(tmp_directory):
+        shutil.rmtree(tmp_directory)
+
+    os.makedirs(tmp_directory)
+
+    if args.test_dataset:
+        csv_file_path = "%s/%s_test.csv" % (TRAIN_TEST_SPLITS_PATH, args.zip)
+    else:
+        csv_file_path = "%s/%s_train.csv" % (TRAIN_TEST_SPLITS_PATH, args.zip)
+        
+    shutil.copy(csv_file_path, tmp_directory)
+
+    files_dict = {"pdbs":pdbs,
+                  "tokens":esm_tokens,
+                  "energies":energy_tensors}
+
+    for k,v in files_dict.items():
+        tmp_work_path = "%s/%s/" % (tmp_directory, k)
+        os.makedirs(tmp_work_path, exist_ok = True)
+        
+        
+        if VERBOSE:
+            print("Zipping up %s" % k)
+
+        print(len(np.unique(v)))
+
+        for full_path_file in v:
+            shutil.copy(full_path_file, tmp_work_path)
+
+    shutil.make_archive("%s/%s" % (work_zip_path, args.zip), 'zip', tmp_directory)
+
+    if VERBOSE:
+        print("Removing tmp directory %s" % tmp_directory)
+    shutil.rmtree(tmp_directory)
+    exit()
+
+
+if args.setup:
+    paths_to_create  = [DATA_PATH,
+                        CODE_PATH,
+                        LOG_PATH,
+                        CLUSTER_EXECUTIONS_PATH,
+                        CONFIGURATION_PATH,
+                        PDB_ROSETTA_SCORES_PATH,
+                        ROSETTA_SCORES_PATH,
+                        RAW_TENSORS_PATH,
+                        RAW_TENSORS_ENERGIES_PATH,
+                        TRAIN_TEST_SPLITS_PATH,
+                        SEQ_SPACES_PATH,
+                        ZIP_PATH]
+
+    for p in paths_to_create:
+        os.makedirs(p, exist_ok=True)
+    exit()
+    
 
 if args.run_statistics is not None:
-
     results = get_missing_sequences(args.is_seq_space_full_path, args.run_statistics, args.test_dataset)
 
     all_energy_files = results["all_energy_files"]
@@ -782,6 +868,10 @@ for mode in executions:
     execution = supported_modes[mode]
     execution()
     
+
+
+
+
 
     
 #do_all(args.master, args.mode)
