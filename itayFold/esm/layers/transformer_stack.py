@@ -66,6 +66,7 @@ class TransformerStack(nn.Module):
         affine: Affine3D | None = None,
         affine_mask: torch.Tensor | None = None,
         chain_id: torch.Tensor | None = None,
+        return_embeddings = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass of the TransformerStack.
@@ -82,9 +83,20 @@ class TransformerStack(nn.Module):
             post_norm: The output tensor of shape (batch_size, sequence_length, d_model).
             pre_norm: The embedding of shape (batch_size, sequence_length, d_model).
         """
+        if return_embeddings:
+            raw_emb = x
+        
         *batch_dims, _ = x.shape
         if chain_id is None:
             chain_id = torch.ones(size=batch_dims, dtype=torch.int64, device=x.device)
         for block in self.blocks:
             x = block(x, sequence_id, affine, affine_mask, chain_id)
+            
+            if return_embeddings:
+                raw_emb = torch.cat([raw_emb, x], dim=0)
+    
+        
+        if return_embeddings:
+            return self.norm(x), x, raw_emb
+        
         return self.norm(x), x

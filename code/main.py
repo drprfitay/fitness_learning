@@ -50,7 +50,6 @@ args = parser.parse_args()
 
 from constants import *
 from utils import *
-from fix_esm_path import fix_esm_path
 
 fix_esm_path()
 
@@ -229,7 +228,7 @@ def inverse_folding_example():
     #chain = ProteinChain.from_rcsb("1utn", "A")
 
     # Read PDB
-    chain = ProteinChain.from_pdb(WT_PATH)
+    chain = ProteinChain.from_pdb(WT_PDB_PATH)
     
 
     # Structure tokens
@@ -255,9 +254,10 @@ def inverse_folding_example():
     output = model.forward(structure_coords=coords, 
                            per_res_plddt=plddt, 
                            structure_tokens=structure_tokens,
-                           sequence_tokens=torch.tensor(sequence, dtype=torch.int64).reshape((1,-1))
-    )
+                           sequence_tokens=torch.tensor(sequence, dtype=torch.int64).reshape((1,-1)),
+                           return_embeddings=True)
     
+    output, all_embeddings = output
     
     
     sequence_tokens = torch.argmax(output.sequence_logits, dim=-1)
@@ -300,6 +300,61 @@ def raw_forward(model,
     
     tokenizers = get_model_tokenizers()
     encoder = ESM3_structure_encoder_v0("cpu")
+
+
+@torch.no_grad()
+def generate_embeddings_from_model(indices,
+                                   model,
+                                   model_name,
+                                   override=False,
+                                   sanity_check=True):
+
+    if not is_sequence_indices:
+        indices = [int(i) for i in indices]
+        
+    print(indices)
+    
+    save_path = "%s/%s" % (MODEL_EMBEDDINGS_PATH, model_name)
+    os.makedirs(save_path, exist_ok=True)
+
+    for idx in indices:
+        sequence_df = DesignConfiguration().df    
+        uid_column = "sequence" if is_sequence_indices else "idx"
+        seq_job_df = sequence_df[sequence_df[uid_column] == idx]
+        seq_str = seq_job_df["sequence"].iloc[0]
+
+        token_tensor_file_name = "tokens_%s.pth" % seq_str
+        if not file_in_dir(token_tensor_file_name, RAW_TENSORS_PATH):
+            if VERBOSE:
+                print("Raw tokens file %s not generated" % token_tensor_file_name)
+            continue
+
+        
+        embeddings_file_name = "embeddings_%s.pth" % seq_str
+        if not override and file_in_dir(embeddings_file_name, save_path):
+            if VERBOSE:
+                print("Raw embeddings file %s already generated" % token_tensor_file_name)
+            continue
+            
+    
+        raw_tokens = torch.load("%s/%s" % (RAW_TENSORS_PATH, token_tensor_file_name))
+        
+        output = model.forward(structure_coords=raw_tokens["coords"], 
+                               per_res_plddt=raw_tokens["plddt"], 
+                               structure_tokens=raw_tokens["structure_tokens"],
+                               sequence_tokens=raw_tokens["sequence_tokens"],
+                               sasa_tokens=raw_tokens["sasa_tokens"],
+                               ss8_tokens=raw_tokens["ss8_tokens"],
+                               function_tokens=raw_tokens["function_tokens"],
+                               return_embeddings = True)
+        
+        
+        final_embeddings = {"normed_emb_last_layer": output[0].embeddings,
+                            "all_emb": output[1]}
+
+        torch.save(final_embeddings, "%s/%s" % (save_path, embeddings_file_name))    
+
+
 
 
 @torch.no_grad()
@@ -575,6 +630,7 @@ def splitter(seq_space_file=None,
         
 
 
+inverse_folding_example()
 args = parser.parse_args()
     
 # Run the command
@@ -751,7 +807,9 @@ if args.setup:
                         RAW_TENSORS_ENERGIES_PATH,
                         TRAIN_TEST_SPLITS_PATH,
                         SEQ_SPACES_PATH,
-                        ZIP_PATH]
+                        ZIP_PATH,
+                        DATASETS_PATH,
+                        MODEL_EMBEDDINGS_PATH]
 
     for p in paths_to_create:
         os.makedirs(p, exist_ok=True)

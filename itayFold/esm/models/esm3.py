@@ -300,6 +300,7 @@ class ESM3(nn.Module, ESM3InferenceClient):
         structure_coords: torch.Tensor | None = None,
         chain_id: torch.Tensor | None = None,
         sequence_id: torch.Tensor | None = None,
+        return_embeddings = False,
     ) -> ESMOutput:
         """
         Performs forward pass through the ESM3 model. Check utils to see how to tokenize inputs from raw data.
@@ -397,7 +398,21 @@ class ESM3(nn.Module, ESM3InferenceClient):
             function_tokens,
             residue_annotation_tokens,
         )
-        x, embedding = self.transformer(x, sequence_id, affine, affine_mask, chain_id)
+        
+        
+        
+        res = self.transformer(x, 
+                               sequence_id, 
+                               affine, 
+                               affine_mask, 
+                               chain_id, 
+                               return_embeddings=return_embeddings)
+        
+        if return_embeddings:
+            x, embedding, all_embedding = res
+            return self.output_heads(x, embedding), all_embedding        
+        
+        x, embedding = res
         return self.output_heads(x, embedding)
 
     # The following methods are for the ESM3InferenceClient interface

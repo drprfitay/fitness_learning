@@ -4,5 +4,6 @@ __pycache__/
 *.py[cod]
 *.so
 
+rosetta/
 data/
 *.pth

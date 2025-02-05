@@ -10,7 +10,7 @@ Created on Sun Jan 12 14:14:18 2025
 
 VERBOSE = True
 
-ROOT_PATH = "/home/labs/fleishman/itayta/fitness_learning"
+ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
 
 DATA_PATH = "%s/data/" % ROOT_PATH
 CODE_PATH = "%s/code/" % ROOT_PATH
@@ -19,16 +19,17 @@ LOG_PATH = "%s/log/" % ROOT_PATH
 CLUSTER_EXECUTIONS_PATH = "%s/executions" % ROOT_PATH
 CONFIGURATION_PATH = "%s/configuration" % DATA_PATH
 PDB_ROSETTA_SCORES_PATH = "%s/pdb_rosetta_scores" % DATA_PATH
+MODEL_EMBEDDINGS_PATH = "%s/raw_embeddings" % DATA_PATH
 ROSETTA_SCORES_PATH = "%s/rosetta_scores" % DATA_PATH
 RAW_TENSORS_PATH = "%s/raw_tensors" % DATA_PATH
 RAW_TENSORS_ENERGIES_PATH = "%s/energies" % RAW_TENSORS_PATH
 TRAIN_TEST_SPLITS_PATH = "%s/train_test_splits/" % CONFIGURATION_PATH
 SEQ_SPACES_PATH = "%s/sequence_spaces/" % CONFIGURATION_PATH
 ZIP_PATH = "%s/zip/" % DATA_PATH 
+DATASETS_PATH = "%s/datasets/" % DATA_PATH 
 
 DEFAULT_LOG_FILE_PATH =  "%s/%s" % (LOG_PATH, "default_log.csv")
 SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "gfp_sequence_dataset.csv")
-
 
 SEQ_DF_ACTIVITY_LABEL_START_IDX = 6
 SEQ_DF_ACTIVITY_LABEL_END_IDX = 39
@@ -42,8 +43,8 @@ WT_PDB_PATH = "%s/initial_data/refined.pdb" %  ROSETTA_FILES_PATH
 ITAYFOLD_PATH = "%s/itayFold/" % ROOT_PATH
 
 WEIGHTS_PATH = "/%s/weights/" % ITAYFOLD_PATH
-MODEL_WEIGHTS_FILE_NAME = "model_weights.pth"
-LORA_WEIGHTS_FIlE_NAME =  "lora_weights.pth"
+MODEL_WEIGHTS_FILE_NAME = "esm_model_weights.pth"
+LORA_WEIGHTS_FIlE_NAME =  "esm_lora_weights.pth"
 ENCODER_WEIGHTS_FILE_NAME = "structure_encoder.pth"
 DECODER_WEIGHTS_FILE_NAME = "structure_decoder.pth"
 
