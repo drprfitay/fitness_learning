@@ -306,6 +306,7 @@ def raw_forward(model,
 def generate_embeddings_from_model(indices,
                                    model,
                                    model_name,
+                                   is_sequence_indices,
                                    override=False,
                                    sanity_check=True):
 
@@ -633,6 +634,18 @@ def splitter(seq_space_file=None,
 inverse_folding_example()
 args = parser.parse_args()
     
+
+
+def do_gen_embeddings():
+    model =  load_model()
+    
+    prefix = MODEL_WEIGHTS_FILE_NAME.split(".pth")[0]
+    
+    generate_embeddings_from_model(args.indices,
+                                   model,
+                                   prefix
+                                   args.is_sequence_indices,
+                                   override=args.ovverride)
 # Run the command
 def do_gen_tokens():
     model =  load_model()
@@ -663,7 +676,8 @@ def do_splitter():
 
 supported_modes = {'splitter': do_splitter,
                    'rosetta': do_rosetta,
-                   'gen_tokens': do_gen_tokens}
+                   'gen_tokens': do_gen_tokens,
+                   'gen_embeddings': do_gen_embeddings}
 # def do_all(is_master, mode):
 #     if is_master == "master":
 #         pass
