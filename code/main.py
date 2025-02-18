@@ -19,8 +19,9 @@ import argparse
 import re
 import shutil
 import pickle
+import threading
 
-
+from multiprocessing import Process, current_process
 
 parser = argparse.ArgumentParser(description="ItayFold main")
 
@@ -37,10 +38,16 @@ parser.add_argument("--is_seq_space_full_path", type=bool, help="Specifies wheth
 parser.add_argument("--scheduler", type=str, help="Specifies the dataset to operate on (SEQ_SPACES_PATH in constants)", required=False, default=None)
 parser.add_argument("--run_statistics", type=str, help="Specifies the dataset to run statistics on (SEQ_SPACES_PATH in constants); similar to scheduling", required=False, default=None)
 parser.add_argument("--zip", type=str, help="Specifies the dataset to zip (SEQ_SPACES_PATH in constants); similar to scheduling", required=False, default=None)
-parser.add_argument("--execute_missing_sequences", type=str, help="When scheduling, specifies whether to use missing sequences that were not generated with respect to 'seq_space_path' (P: PDBs, E: Energies, T: Tokens)", required=False, default=None)
+parser.add_argument("--zipformat", type=str, help="Specifies what to pack in zip, 'T' Tensors, 'E' embeddings, 'P' pdbs, 'R' rosetta energies. Example usage --zipformat TE", required=False, default=None)
+parser.add_argument("--execute_missing_sequences", type=str, help="When scheduling, specifies whether to use missing sequences that were not generated with respect to 'seq_space_path'. 'T' Tensors, 'E' embeddings, 'P' pdbs, 'R' rosetta energies.", required=False, default=None)
 parser.add_argument("--test_dataset", type=bool, help="When scheduling, specifies whether operating on test dataset and not train", required=False, default=False)
 parser.add_argument("--njobs", type=int, help="When scheduling, specifies number of jobs ", required=False, default=100)
 parser.add_argument("--setup", type=bool, help="Sets up the environment and creates directories", required=False, default=False)
+parser.add_argument("--lt", type=bool, help="Specifies whether using the long term storages or not", required=False, default=False)
+parser.add_argument("--rsynclt", type=bool, help="Specifies whether to sync between long term and regulat storage", required=False, default=False)
+parser.add_argument("--rsynclt_remove_files", type=bool, help="Specifies whether to remove files after sync", required=False, default=False)
+parser.add_argument("--Nthreads", type=int, help="Specifies the number of threads to use when possible", required=False, default=1)
+ 
 
 #parser.add_argument("--gen_", type=str, help="Specifies the train dataset to operate on (SEQ_SPACES_PATH in constants)", required=False, default=None)
 
@@ -343,7 +350,7 @@ def generate_embeddings_from_model(indices,
         output = model.forward(structure_coords=raw_tokens["coords"], 
                                per_res_plddt=raw_tokens["plddt"], 
                                structure_tokens=raw_tokens["structure_tokens"],
-                               sequence_tokens=raw_tokens["sequence_tokens"],
+                               sequence_tokens=raw_tokens["sequences_tokens"],
                                sasa_tokens=raw_tokens["sasa_tokens"],
                                ss8_tokens=raw_tokens["ss8_tokens"],
                                function_tokens=raw_tokens["function_tokens"],
@@ -631,21 +638,19 @@ def splitter(seq_space_file=None,
         
 
 
-inverse_folding_example()
 args = parser.parse_args()
     
 
 
 def do_gen_embeddings():
     model =  load_model()
-    
     prefix = MODEL_WEIGHTS_FILE_NAME.split(".pth")[0]
     
     generate_embeddings_from_model(args.indices,
                                    model,
-                                   prefix
+                                   prefix,
                                    args.is_sequence_indices,
-                                   override=args.ovverride)
+                                   override=args.override)
 # Run the command
 def do_gen_tokens():
     model =  load_model()
@@ -738,76 +743,10 @@ def send_job_to_cluster():
     if VERBOSE:
         print(node_command)
 
-    process = subprocess.run(node_command, shell=True, check=True, text=True, capture_output=True)        
+    process = subprocess.run(node_command, shell=True, check=True, text=True, capture_output=True)   
 
-
-
-if args.zip is not None:
-
-    if args.is_seq_space_full_path:
-        print("Please specify the sequence space in SEQ_SPACE folder and do not provide full path when zipping")
-        exit()
-    
-    
-    results = get_missing_sequences(args.is_seq_space_full_path, args.zip, args.test_dataset, return_full_path = True)
-    
-    pdb_generated = results["pdb_generated"]
-    tokens_generated = results["tokens_generated"]
-    energies_generated = results["energies_generated"]
-    all_energy_files = results["all_energy_files"]
-    all_pdb_files = results["all_pdb_files"]
-    all_esm_tensor_files = results["all_esm_tensor_files"]
-
-    pdbs = np.array(all_pdb_files)[np.isin(all_pdb_files, pdb_generated)]
-    esm_tokens = np.array(all_esm_tensor_files)[np.isin(all_esm_tensor_files, tokens_generated)]
-    energy_tensors = np.array(all_energy_files)[np.isin(all_energy_files, energies_generated)]
-
-    if VERBOSE:
-        print("Zipping up dataset %s files included: " % args.zip)
-        print("\t %d pdb files " % len(pdbs))
-        print("\t %d esm token files " % len(esm_tokens))
-        print("\t %d rosetta energy files " % len(energy_tensors))
-
-    work_zip_path = "%s/%s_zipped/" % (ZIP_PATH, args.zip)
-    os.makedirs(work_zip_path, exist_ok = True)
-    tmp_directory = "%s/files" % work_zip_path
-
-    if os.path.exists(tmp_directory):
-        shutil.rmtree(tmp_directory)
-
-    os.makedirs(tmp_directory)
-
-    if args.test_dataset:
-        csv_file_path = "%s/%s_test.csv" % (TRAIN_TEST_SPLITS_PATH, args.zip)
-    else:
-        csv_file_path = "%s/%s_train.csv" % (TRAIN_TEST_SPLITS_PATH, args.zip)
-        
-    shutil.copy(csv_file_path, tmp_directory)
-
-    files_dict = {"pdbs":pdbs,
-                  "tokens":esm_tokens,
-                  "energies":energy_tensors}
-
-    for k,v in files_dict.items():
-        tmp_work_path = "%s/%s/" % (tmp_directory, k)
-        os.makedirs(tmp_work_path, exist_ok = True)
-        
-        
-        if VERBOSE:
-            print("Zipping up %s" % k)
-
-        print(len(np.unique(v)))
-
-        for full_path_file in v:
-            shutil.copy(full_path_file, tmp_work_path)
-
-    shutil.make_archive("%s/%s" % (work_zip_path, args.zip), 'zip', tmp_directory)
-
-    if VERBOSE:
-        print("Removing tmp directory %s" % tmp_directory)
-    shutil.rmtree(tmp_directory)
-    exit()
-
+if args.rsynclt:
+    pass
 
 if args.setup:
     paths_to_create  = [DATA_PATH,
@@ -828,10 +767,168 @@ if args.setup:
     for p in paths_to_create:
         os.makedirs(p, exist_ok=True)
     exit()
-    
+   
+# if args.gen_dataset: is not None:
 
+if args.zip is not None:
+
+    if args.is_seq_space_full_path:
+        print("Please specify the sequence space in SEQ_SPACE folder and do not provide full path when zipping")
+        exit()
+    
+    
+    results = get_missing_sequences(args.is_seq_space_full_path, 
+                                    args.zip, 
+                                    args.test_dataset, 
+                                    return_full_path = True, 
+                                    model_name=MODEL_WEIGHTS_FILE_NAME.split(".pth")[0],
+                                    long_term=args.lt)
+    
+    pdb_generated = results["pdb_generated"]
+    tokens_generated = results["tokens_generated"]
+    energies_generated = results["energies_generated"]
+    embeddings_generated = results["embeddings_generated"]
+    all_energy_files = results["all_energy_files"]
+    all_pdb_files = results["all_pdb_files"]
+    all_esm_tensor_files = results["all_esm_tensor_files"]
+    all_embeddings_generateed = results["all_embeddings_generated"]
+
+    pdbs = np.array(all_pdb_files)[np.isin(all_pdb_files, pdb_generated)]
+    esm_tokens = np.array(all_esm_tensor_files)[np.isin(all_esm_tensor_files, tokens_generated)]
+    energy_tensors = np.array(all_energy_files)[np.isin(all_energy_files, energies_generated)]
+    energy_tensors = np.array(all_energy_files)[np.isin(all_energy_files, energies_generated)]
+    embeddings = np.array(all_embeddings_generateed)[np.isin(all_embeddings_generateed, embeddings_generated)]
+
+    if VERBOSE:
+        print("Zipping up dataset %s files included: " % args.zip)
+        print("\t %d pdb files " % len(pdbs))
+        print("\t %d esm token files " % len(esm_tokens))
+        print("\t %d rosetta energy files " % len(energy_tensors))
+        print("\t %d embedding files " % len(embeddings))
+
+
+    if args.lt:
+        zip_path_to_use = LONG_TERM_STORAGE_ZIP_PATH
+    else: 
+        zip_path_to_use = ZIP_PATH
+
+    work_zip_path = "%s/%s_%s_zipped/" % (zip_path_to_use,
+                                        "test" if args.test_dataset else "train",
+                                         args.zip)
+    os.makedirs(work_zip_path, exist_ok = True)
+    tmp_directory = "%s/files" % work_zip_path
+
+    if os.path.exists(tmp_directory) and args.override:
+        shutil.rmtree(tmp_directory)
+
+    os.makedirs(tmp_directory, exist_ok = True)
+
+    if args.test_dataset:
+        csv_file_path = "%s/%s_test.csv" % (TRAIN_TEST_SPLITS_PATH, args.zip)
+    else:
+        csv_file_path = "%s/%s_train.csv" % (TRAIN_TEST_SPLITS_PATH, args.zip)
+        
+    shutil.copy(csv_file_path, "%s/sequences.csv" % tmp_directory)
+
+    
+    if args.zipformat is None:
+        files_dict = {"pdbs":pdbs,
+                    "tokens":esm_tokens,
+                    "energies":energy_tensors,
+                    "embeddings":embeddings}
+    else: 
+        files_dict = {}
+
+        zip_format_chars = [c for c in args.zipformat]
+
+        things_to_add = {'T': ("Tensors/Tokens",  "tokens", esm_tokens),
+                         'R': ("Rosetta energies", "energies", energy_tensors),
+                         'E': ("Embeddings", "embeddings", embeddings),
+                         'P': ("PDB files", "pdbs", pdbs)}
+                         
+        for k, item in things_to_add.items():
+            if k in zip_format_chars:
+                print_str, res_dir, list_of_files = item
+                if VERBOSE:
+                    print("Adding '%s' to zip file" % print_str)
+
+                files_dict[res_dir] = list_of_files
+                 
+
+    threads = {}
+
+    def copy_files(tmp_work_path, v, td=None):
+        for idx, full_path_file in enumerate(v):
+            if VERBOSE and idx % 1000 == 0:
+                print("\t%sDone copying (%d / %d)" % ("" if td == None else "(%d) " % td, idx, len(np.unique(v))))
+
+            if not file_in_dir(full_path_file.split("/")[-1], tmp_work_path):
+                shutil.copy(full_path_file, tmp_work_path)
+                
+            elif VERBOSE and idx % 1000 == 0:
+                print("\t%sSkipping (%d / %d)" % ("" if td == None else "(%d) " % td, idx, len(np.unique(v))))
+
+        # if td is not None:
+        #     thrd_name = current_process().name
+        #     threads[thrd_name].join()
+
+
+    for k,v in files_dict.items():
+        tmp_work_path = "%s/%s/" % (tmp_directory, k)
+        os.makedirs(tmp_work_path, exist_ok = True)
+        
+        
+        if VERBOSE:
+            print("Zipping up %s" % k)
+        
+        N_threads = args.Nthreads
+
+        if N_threads > 1:
+            if VERBOSE:
+                print("Running %d threads for zip" % N_threads  )
+            chunk_size = len(v) // N_threads
+
+            
+            for td in range(N_threads):
+                print("Starting thread %d for zipping of %s" % (td, k))
+                si = td * chunk_size
+                if td == (N_threads - 1):                    
+                    fi = len(v)
+                else:
+                    fi = (td + 1) * chunk_size
+
+                thrd_name = "td%d" % td
+                thrd = Process(target=copy_files, args=(tmp_work_path, v[si:fi], td, ), name=thrd_name)
+                threads[thrd_name] = thrd
+                thrd.start()
+            
+            for td in range(N_threads):
+                thrd_name = "td%d" % td
+                threads[thrd_name].join()
+                if VERBOSE:
+                    print("Zip thread %d is finished" % td)
+
+
+
+                
+
+    shutil.make_archive("%s/%s_%s" % (work_zip_path, 
+                                      "test" if args.test_dataset else "train", 
+                                      args.zip), 
+                        'zip', 
+                        tmp_directory)
+
+    if VERBOSE:
+        print("Removing tmp directory %s" % tmp_directory)
+    #shutil.rmtree(tmp_directory)
+    exit()
+ 
 if args.run_statistics is not None:
-    results = get_missing_sequences(args.is_seq_space_full_path, args.run_statistics, args.test_dataset)
+    results = get_missing_sequences(args.is_seq_space_full_path, 
+                                    args.run_statistics, 
+                                    is_test=args.test_dataset,
+                                    model_name=MODEL_WEIGHTS_FILE_NAME.split(".pth")[0],
+                                    long_term=args.lt)
 
     all_energy_files = results["all_energy_files"]
     all_pdb_files = results["all_pdb_files"]
@@ -840,16 +937,20 @@ if args.run_statistics is not None:
     pdb_generated = results["pdb_generated"]
     tokens_generated = results["tokens_generated"]
     energies_generated = results["energies_generated"]
+    embeddings_generated = results["embeddings_generated"]
+    all_embeddings_generated = results["all_embeddings_generated"]
 
     n_pdbs = np.isin(all_pdb_files, pdb_generated)
     n_esm_tokens = np.isin(all_esm_tensor_files, tokens_generated)
     n_energy_tensors = np.isin(all_energy_files, energies_generated)
+    n_embeddings = np.isin(all_embeddings_generated, embeddings_generated)
 
     
     print("####### SUMMARY STATISTICS OVER %s" % args.run_statistics)
     print("\tOverall: %d/%d (%.3f) energy files generated" % (np.sum(n_energy_tensors), len(sequences_in_set), np.sum(n_energy_tensors)/len(sequences_in_set)))
     print("\tOverall: %d/%d (%.3f) pdb files generated" % (np.sum(n_pdbs), len(sequences_in_set), np.sum(n_pdbs)/len(sequences_in_set)))
     print("\tOverall: %d/%d (%.3f) esm token files generated" % (np.sum(n_esm_tokens), len(sequences_in_set), np.sum(n_esm_tokens)/len(sequences_in_set)))
+    print("\tOverall: %d/%d (%.3f) embeddings generated" % (np.sum(n_embeddings), len(sequences_in_set), np.sum(n_embeddings)/len(sequences_in_set)))
 
     exit()
 
@@ -880,24 +981,46 @@ if args.scheduler is not None:
     
 
     if args.execute_missing_sequences is not None:
-        results = get_missing_sequences(args.is_seq_space_full_path, args.scheduler, args.test_dataset)
-        sequences_in_set = results["sequences_in_set"]
 
         if args.execute_missing_sequences == "E":
+            esm_model_name = MODEL_WEIGHTS_FILE_NAME.split(".pth")[0]
+        else:
+            esm_model_name = None
+        
+        results = get_missing_sequences(args.is_seq_space_full_path, 
+                                        args.scheduler, 
+                                        is_test=args.test_dataset, 
+                                        return_full_path=False,
+                                        model_name=esm_model_name)
+
+        sequences_in_set = results["sequences_in_set"]
+
+        #TODO aggregate 
+
+        #missing_sequences = np.array([True] * )
+        if args.execute_missing_sequences == "R":
             generated = results["energies_generated"]
             all_files = results["all_energy_files"]        
         elif args.execute_missing_sequences == "T":            
             generated = results["tokens_generated"]
-            all_files = results["all_esm_tensor_files"]        
+            all_files = results["all_esm_tensor_files"]
+        elif args.execute_missing_sequences == "E":                        
+            generated = results["embeddings_generated"]
+            all_files = results["all_embeddings_generated"]
         else:
             generated = results["pdb_generated"]
             all_files = results["all_pdb_files"]        
         
+        print(all_files)
+        print(generated)
+        print(len(generated))
+        print(len(all_files))
         missing_sequences = ~np.isin(all_files, generated)
         if VERBOSE:
             print("There are %d sequences missing out of %d" % (sum(missing_sequences), len(sequences_in_set)))
 
         scheduling_df = scheduling_df.loc[missing_sequences,:]
+
 
     n_jobs = args.njobs
     n_sequences = scheduling_df.shape[0]
@@ -937,6 +1060,8 @@ for mode in executions:
         exit()
 
 for mode in executions:
+    if VERBOSE:
+        print("Running mode %s" % mode)
     execution = supported_modes[mode]
     execution()
     

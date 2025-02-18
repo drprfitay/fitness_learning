@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 *.so
 
+executions/
 rosetta/
 data/
 *.pth

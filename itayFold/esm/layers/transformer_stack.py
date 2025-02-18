@@ -85,14 +85,16 @@ class TransformerStack(nn.Module):
         """
         if return_embeddings:
             raw_emb = x
+            block_range = range(len(self.blocks) - 8, len(self.blocks))
         
         *batch_dims, _ = x.shape
         if chain_id is None:
-            chain_id = torch.ones(size=batch_dims, dtype=torch.int64, device=x.device)
-        for block in self.blocks:
+            chain_id = torch.ones(size=batch_dims, dtype=torch.int64, device=x.device)\
+                
+        for idx, block in enumerate(self.blocks):
             x = block(x, sequence_id, affine, affine_mask, chain_id)
             
-            if return_embeddings:
+            if return_embeddings and idx in block_range:
                 raw_emb = torch.cat([raw_emb, x], dim=0)
     
         
