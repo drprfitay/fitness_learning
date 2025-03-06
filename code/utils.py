@@ -29,7 +29,12 @@ class DesignConfigurationMeta(type):
 
 class DesignConfiguration(metaclass=DesignConfigurationMeta):
     
-    sequence_space_path = SEQUENCE_SPACE_FILE_PATH
+    is_fixed=True
+    
+    if is_fixed:
+        sequence_space_path = FIXED_SEQUENCE_SPACE_FILE_PATH
+    else:
+        sequence_space_path = SEQUENCE_SPACE_FILE_PATH
     
     def __init__(self,):
         self.df = pd.read_csv(self.sequence_space_path)

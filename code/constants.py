@@ -30,6 +30,7 @@ DATASETS_PATH = "%s/datasets/" % DATA_PATH
 
 DEFAULT_LOG_FILE_PATH =  "%s/%s" % (LOG_PATH, "default_log.csv")
 SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "gfp_sequence_dataset.csv")
+FIXED_SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "fixed_unique_gfp_sequence_dataset.csv")
 
 SEQ_DF_ACTIVITY_LABEL_START_IDX = 6
 SEQ_DF_ACTIVITY_LABEL_END_IDX = 39

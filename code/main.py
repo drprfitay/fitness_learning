@@ -635,7 +635,6 @@ inverse_folding_example()
 args = parser.parse_args()
     
 
-
 def do_gen_embeddings():
     model =  load_model()
     
@@ -643,9 +642,9 @@ def do_gen_embeddings():
     
     generate_embeddings_from_model(args.indices,
                                    model,
-                                   prefix
+                                   prefix,
                                    args.is_sequence_indices,
-                                   override=args.ovverride)
+                                   override=args.override)
 # Run the command
 def do_gen_tokens():
     model =  load_model()
