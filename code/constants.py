@@ -10,8 +10,12 @@ Created on Sun Jan 12 14:14:18 2025
 
 VERBOSE = True
 
-ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+ROOT_PATH = "/home/labs/fleishman/itayta/fitness"
+#ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
 
+
+
+LONG_TERM_STORAGE_DATA_PATH = "/storwis/Labs/sarellab/itayta/data" #None
 DATA_PATH = "%s/data/" % ROOT_PATH
 CODE_PATH = "%s/code/" % ROOT_PATH
 LOG_PATH = "%s/log/" % ROOT_PATH
@@ -28,9 +32,22 @@ SEQ_SPACES_PATH = "%s/sequence_spaces/" % CONFIGURATION_PATH
 ZIP_PATH = "%s/zip/" % DATA_PATH 
 DATASETS_PATH = "%s/datasets/" % DATA_PATH 
 
+if LONG_TERM_STORAGE_DATA_PATH is not None:
+    LONG_TERM_STORAGE_CONFIGURATION_PATH = "%s/configuration" % LONG_TERM_STORAGE_DATA_PATH
+    LONG_TERM_STORAGE_PDB_ROSETTA_SCORES_PATH = "%s/pdb_rosetta_scores" % LONG_TERM_STORAGE_DATA_PATH
+    LONG_TERM_STORAGE_MODEL_EMBEDDINGS_PATH = "%s/raw_embeddings" % LONG_TERM_STORAGE_DATA_PATH
+    LONG_TERM_STORAGE_ROSETTA_SCORES_PATH = "%s/rosetta_scores" % LONG_TERM_STORAGE_DATA_PATH
+    LONG_TERM_STORAGE_RAW_TENSORS_PATH = "%s/raw_tensors" % LONG_TERM_STORAGE_DATA_PATH
+    LONG_TERM_STORAGE_RAW_TENSORS_ENERGIES_PATH = "%s/energies" % LONG_TERM_STORAGE_RAW_TENSORS_PATH
+    LONG_TERM_STORAGE_TRAIN_TEST_SPLITS_PATH = "%s/train_test_splits/" % LONG_TERM_STORAGE_CONFIGURATION_PATH
+    LONG_TERM_STORAGE_SEQ_SPACES_PATH = "%s/sequence_spaces/" % LONG_TERM_STORAGE_CONFIGURATION_PATH
+    LONG_TERM_STORAGE_ZIP_PATH = "%s/zip/" % LONG_TERM_STORAGE_DATA_PATH 
+    LONG_TERM_STORAGE_DATASETS_PATH = "%s/datasets/" % LONG_TERM_STORAGE_DATA_PATH 
+    
+
 DEFAULT_LOG_FILE_PATH =  "%s/%s" % (LOG_PATH, "default_log.csv")
-SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "gfp_sequence_dataset.csv")
-FIXED_SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "fixed_unique_gfp_sequence_dataset.csv")
+SEQUENCE_SPACE_FILE_PATH = "%s/%s" % (CONFIGURATION_PATH, "fixed_unique_gfp_sequence_dataset.csv")#"gfp_sequence_dataset.csv")
+
 
 SEQ_DF_ACTIVITY_LABEL_START_IDX = 6
 SEQ_DF_ACTIVITY_LABEL_END_IDX = 39

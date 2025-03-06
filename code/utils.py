@@ -10,6 +10,8 @@ import sys, os
 import pandas as pd
 import numpy as np
 import csv
+import subprocess
+import random
 
 from datetime import datetime
 from constants import *
@@ -165,7 +167,22 @@ def gfp_rosetta_job_generator(indices, is_sequence_indices, gen_pdb, override=Fa
    
 
 
-def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False, return_full_path=False):
+def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False, return_full_path=False, model_name=None, long_term=False):
+
+
+    if not long_term:
+        train_test_splits_path_to_use = TRAIN_TEST_SPLITS_PATH
+        pdb_rosetta_scores_path_to_use = PDB_ROSETTA_SCORES_PATH
+        raw_tensors_path_to_use = RAW_TENSORS_PATH
+        raw_tensor_energies_path_to_use = RAW_TENSORS_ENERGIES_PATH
+        model_embedding_path_to_use = MODEL_EMBEDDINGS_PATH
+    else:
+        train_test_splits_path_to_use = LONG_TERM_STORAGE_TRAIN_TEST_SPLITS_PATH
+        pdb_rosetta_scores_path_to_use = LONG_TERM_STORAGE_PDB_ROSETTA_SCORES_PATH
+        raw_tensors_path_to_use = LONG_TERM_STORAGE_RAW_TENSORS_PATH
+        raw_tensor_energies_path_to_use = LONG_TERM_STORAGE_RAW_TENSORS_ENERGIES_PATH
+        model_embedding_path_to_use = LONG_TERM_STORAGE_MODEL_EMBEDDINGS_PATH
+
     if not is_fulL_path:
         full_seq_space_file = "%s/%s" % (TRAIN_TEST_SPLITS_PATH, seq_space_file)
 
@@ -177,9 +194,12 @@ def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False, return_fu
     n_sequences = working_df.shape[0]
 
     sequences_in_set = working_df["sequence"].to_list()
-    pdb_generated = os.listdir(PDB_ROSETTA_SCORES_PATH)
-    tokens_generated = os.listdir(RAW_TENSORS_PATH)
-    energies_generated = os.listdir(RAW_TENSORS_ENERGIES_PATH)
+    pdb_generated = os.listdir(pdb_rosetta_scores_path_to_use)
+    tokens_generated = os.listdir(raw_tensors_path_to_use)
+    energies_generated = os.listdir(raw_tensor_energies_path_to_use)
+    
+    if model_name is not None:
+        embeddings_generated = os.listdir("%s/%s" % (model_embedding_path_to_use, model_name))
 
 
 
@@ -187,16 +207,23 @@ def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False, return_fu
     all_pdb_files  =  ["%s_refined.pdb" % seq for seq in sequences_in_set]
     all_esm_tensor_files  = ["tokens_%s.pth" % seq for seq in sequences_in_set]
 
+    if model_name is not None:
+        all_embeddings_generated = ["embeddings_%s.pth" % seq for seq in sequences_in_set]
+
 
     if return_full_path:
-        pdb_generated = ["%s/%s" % (PDB_ROSETTA_SCORES_PATH, f) for f in  pdb_generated]
-        tokens_generated = ["%s/%s" % (RAW_TENSORS_PATH, f) for f in  tokens_generated]
-        energies_generated = ["%s/%s" % (RAW_TENSORS_ENERGIES_PATH, f) for f in  energies_generated]
+        pdb_generated = ["%s/%s" % (pdb_rosetta_scores_path_to_use, f) for f in  pdb_generated]
+        tokens_generated = ["%s/%s" % (raw_tensors_path_to_use, f) for f in  tokens_generated]
+        energies_generated = ["%s/%s" % (raw_tensor_energies_path_to_use, f) for f in  energies_generated]
     
-        all_pdb_files = ["%s/%s" % (PDB_ROSETTA_SCORES_PATH, f) for f in  all_pdb_files]
-        all_esm_tensor_files = ["%s/%s" % (RAW_TENSORS_PATH, f) for f in  all_esm_tensor_files]
-        all_energy_files = ["%s/%s" % (RAW_TENSORS_ENERGIES_PATH, f) for f in  all_energy_files]
+        all_pdb_files = ["%s/%s" % (pdb_rosetta_scores_path_to_use, f) for f in  all_pdb_files]
+        all_esm_tensor_files = ["%s/%s" % (raw_tensors_path_to_use, f) for f in  all_esm_tensor_files]
+        all_energy_files = ["%s/%s" % (raw_tensor_energies_path_to_use, f) for f in  all_energy_files]
 
+        if model_name is not None:
+            embeddings_generated = ["%s/%s/%s" % (model_embedding_path_to_use, model_name, f) for f in  embeddings_generated] 
+            all_embeddings_generated =  ["%s/%s/%s" % (model_embedding_path_to_use, model_name, f) for f in  all_embeddings_generated]
+            
 
     results = {"all_energy_files" : all_energy_files,
                 "all_pdb_files" : all_pdb_files,
@@ -205,6 +232,11 @@ def get_missing_sequences(is_fulL_path, seq_space_file, is_test=False, return_fu
                 "pdb_generated" : pdb_generated,
                 "tokens_generated" : tokens_generated,
                 "energies_generated" : energies_generated}
+
+    if model_name is not None:
+        results["embeddings_generated"] = embeddings_generated
+        results["all_embeddings_generated"] = all_embeddings_generated
+
                     
     return (results) 
 
@@ -248,4 +280,66 @@ def append_to_log(sequence, free_text_1=None, free_text_2=None, ref_file_1=None,
 
 
 
+def fast_file_copy_or_move(from_dir, 
+                           to_dir,
+                           move=False,                        
+                           nthreads=128, 
+                           blocking=False, 
+                           file_list=None):
+
+    commands = []
+
+    if file_list is not None:
+
+        random_seed_1 = random.randint(1000, 10000000)
+        random_seed_2 = random.randint(1000, 10000000)
+
+        tmp_f_name = "tmp_file_list_%d_%d" % (random_seed_1, random_seed_2)
+
+        with open(tmp_f_name, "w") as f:
+            for fl in file_list:
+                f.write("%s/%s\n" % (from_dir, fl))
+
+        commands.append("module load parallel && cat %s | parallel -j%d rsync -av {} %s" % (tmp_f_name, nthreads, to_dir))
+        commands.append("rm %s" % tmp_f_name)
+    else :
+        move_or_copy_str = "--remove-source-files" if move else ""
+
+        mkdir_vars = (from_dir,nthreads,to_dir)
+        mkdir_cmd = "module load parallel && find %s/ -mindepth 1 -type d -printf \"%%P\n\" | parallel -j%d mkdir -p %s/{}" % mkdir_vars
+
+        cpy_vars = (from_dir, nthreads, from_dir, to_dir, move_or_copy_str)
+        cpy_cmd = "module load parallel && find %s/ -mindepth 1 -type f -printf \"%%P\n\" | parallel -j%d rsync -a %s/{} %s/{} %s" % cpy_vars
+                                                                                                            
+        commands.append(mkdir_cmd)
+        commands.append(cpy_cmd)                      
+    
+    if blocking:
+        spawn = subprocess.call
+    else:
+        spawn = subprocess.Popen
+
+    for command in commands:
+        spawn(command, shell=True) 
+
+
+
+
+def fast_zip(dir, output_zip_path, blocking=False, nthreads=128, method="zstd"):
+
+
+    if method == "pigz":
+        commands = ["module load pigz && tar cf - /%s | pigz -9 -p %d > %s" % (dir, nthreads, output_zip_path)]
+    elif method == "xz":
+            commands = ["tar cf - /%s | xz -9 -T%d > %s" % (dir, nthreads, output_zip_path)]
+    elif method == "zstd":
+        commands = ["module load zstd && tar cf - /%s | zstd -19 -T%d -o %s" % (dir, nthreads, output_zip_path)]
+    
+    if blocking:
+        spawn = subprocess.call
+    else:
+        spawn = subprocess.Popen
+
+    for command in commands:
+        spawn(command, shell=True) 
     
