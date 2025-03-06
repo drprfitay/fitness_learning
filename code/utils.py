@@ -275,20 +275,66 @@ def append_to_log(sequence, free_text_1=None, free_text_2=None, ref_file_1=None,
 
 
 
-def fast_file_copy(from_dir, to_dir, nthreads=128, blocking=False, file_list=None):
+def fast_file_copy_or_move(from_dir, 
+                           to_dir,
+                           move=False,                        
+                           nthreads=128, 
+                           blocking=False, 
+                           file_list=None):
+
+    commands = []
 
     if file_list is not None:
 
         random_seed_1 = random.randint(1000, 10000000)
         random_seed_2 = random.randint(1000, 10000000)
+
         tmp_f_name = "tmp_file_list_%d_%d" % (random_seed_1, random_seed_2)
 
         with open(tmp_f_name, "w") as f:
             for fl in file_list:
                 f.write("%s/%s\n" % (from_dir, fl))
 
-        command = "module load parallel && cat %s | parallel -j%d rsync -av {} %s" % (tmp_f_name, nthreads, to_dir)
+        commands.append("module load parallel && cat %s | parallel -j%d rsync -av {} %s" % (tmp_f_name, nthreads, to_dir))
+        commands.append("rm %s" % tmp_f_name)
     else :
-        command = "module load parallel && find %s -type f | parallel -j%d rsync -av {} %s" % (from_dir, nthreads, to_dir)
+        move_or_copy_str = "--remove-source-files" if move else ""
 
-    subprocess.call(command, shell=True) 
+        mkdir_vars = (from_dir,nthreads,to_dir)
+        mkdir_cmd = "module load parallel && find %s/ -mindepth 1 -type d -printf \"%%P\n\" | parallel -j%d mkdir -p %s/{}" % mkdir_vars
+
+        cpy_vars = (from_dir, nthreads, from_dir, to_dir, move_or_copy_str)
+        cpy_cmd = "module load parallel && find %s/ -mindepth 1 -type f -printf \"%%P\n\" | parallel -j%d rsync -a %s/{} %s/{} %s" % cpy_vars
+                                                                                                            
+        commands.append(mkdir_cmd)
+        commands.append(cpy_cmd)                      
+    
+    if blocking:
+        spawn = subprocess.call
+    else:
+        spawn = subprocess.Popen
+
+    for command in commands:
+        spawn(command, shell=True) 
+
+
+
+
+def fast_zip(dir, output_zip_path, blocking=False, nthreads=128, method="zstd"):
+
+
+    if method == "pigz":
+        commands = ["module load pigz && tar cf - /%s | pigz -9 -p %d > %s" % (dir, nthreads, output_zip_path)]
+    elif method == "xz":
+            commands = ["tar cf - /%s | xz -9 -T%d > %s" % (dir, nthreads, output_zip_path)]
+    elif method == "zstd":
+        commands = ["module load zstd && tar cf - /%s | zstd -19 -T%d -o %s" % (dir, nthreads, output_zip_path)]
+    
+    if blocking:
+        spawn = subprocess.call
+    else:
+        spawn = subprocess.Popen
+
+    for command in commands:
+        spawn(command, shell=True) 
+    

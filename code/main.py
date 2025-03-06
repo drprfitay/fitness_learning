@@ -883,41 +883,58 @@ if args.zip is not None:
         
         N_threads = args.Nthreads
 
-        if N_threads > 1:
-            if VERBOSE:
-                print("Running %d threads for zip" % N_threads  )
-            chunk_size = len(v) // N_threads
+        # if N_threads > 1:
+        #     if VERBOSE:
+        #         print("Running %d threads for zip" % N_threads  )
+        #     chunk_size = len(v) // N_threads
 
             
-            for td in range(N_threads):
-                print("Starting thread %d for zipping of %s" % (td, k))
-                si = td * chunk_size
-                if td == (N_threads - 1):                    
-                    fi = len(v)
-                else:
-                    fi = (td + 1) * chunk_size
+        #     for td in range(N_threads):
+        #         print("Starting thread %d for zipping of %s" % (td, k))
+        #         si = td * chunk_size
+        #         if td == (N_threads - 1):                    
+        #             fi = len(v)
+        #         else:
+        #             fi = (td + 1) * chunk_size
 
-                thrd_name = "td%d" % td
-                thrd = Process(target=copy_files, args=(tmp_work_path, v[si:fi], td, ), name=thrd_name)
-                threads[thrd_name] = thrd
-                thrd.start()
+        #         thrd_name = "td%d" % td
+        #         thrd = Process(target=copy_files, args=(tmp_work_path, v[si:fi], td, ), name=thrd_name)
+        #         threads[thrd_name] = thrd
+        #         thrd.start()
             
-            for td in range(N_threads):
-                thrd_name = "td%d" % td
-                threads[thrd_name].join()
-                if VERBOSE:
-                    print("Zip thread %d is finished" % td)
+        #     for td in range(N_threads):
+        #         thrd_name = "td%d" % td
+        #         threads[thrd_name].join()
+        #         if VERBOSE:
+        #             print("Zip thread %d is finished" % td)
 
+        print(len(np.unique(v)))
+
+        print(v[1:100])
+
+        fast_file_copy_or_move(from_dir="/",
+                               to_dir=tmp_work_path,
+                               file_list=v,
+                               blocking=True)
+                               
+        print(tmp_work_path)
+
+        # for full_path_file in v:
+        #     #shutil.copy(full_path_file, tmp_work_path)
+            
 
 
                 
 
-    shutil.make_archive("%s/%s_%s" % (work_zip_path, 
-                                      "test" if args.test_dataset else "train", 
-                                      args.zip), 
-                        'zip', 
-                        tmp_directory)
+    # shutil.make_archive("%s/%s_%s" % (work_zip_path, 
+    #                                   "test" if args.test_dataset else "train", 
+    #                                   args.zip), 
+    #                     'zip', 
+    #                     tmp_directory)
 
+    zip_file_name = "%s/%s_%s.tar.zst" % (work_zip_path, "test" if args.test_dataset else "train", args.zip)
+    fast_zip(tmp_directory, zip_file_name, blocking=True)
+    
     if VERBOSE:
         print("Removing tmp directory %s" % tmp_directory)
     #shutil.rmtree(tmp_directory)
