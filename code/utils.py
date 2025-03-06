@@ -34,7 +34,7 @@ class DesignConfiguration(metaclass=DesignConfigurationMeta):
     is_fixed=True
     
     if is_fixed:
-        sequence_space_path = FIXED_SEQUENCE_SPACE_FILE_PATH
+        sequence_space_path = SEQUENCE_SPACE_FILE_PATH
     else:
         sequence_space_path = SEQUENCE_SPACE_FILE_PATH
     
@@ -343,3 +343,7 @@ def fast_zip(dir, output_zip_path, blocking=False, nthreads=128, method="zstd"):
     for command in commands:
         spawn(command, shell=True) 
     
+    
+    
+    
+

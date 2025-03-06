@@ -123,9 +123,7 @@ class EsmGfpDataset(Dataset):
             if self.embedding_layer is not None:
                 return data["all_emb"][self.embedding_layer,:,:], lbls
             else:
-                return (data["all_emb"], lbls)
-        
-        
+                return (data["all_emb"], lbls)        
         
         
         if self.mode == "tokens":
