@@ -271,7 +271,7 @@ def mirror_and_submit():
         # multi node
         ptile = args.ptile
         num_nodes = num_tasks // ptile
-        assert num_nodes * ptile == num_tasks, f'Fill the nodes! if ngpus {args.ngpus} > {ptile}, it must be an int mult of {ptile}'
+        assert num_nodes * ptile == num_tasks, f'Fill the nodes! if ngpus {args.ngpus} > {ptile}, it  must be an int mult of {ptile}'
     else:
         ptile = args.ngpus
 

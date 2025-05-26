@@ -10,8 +10,8 @@ Created on Sun Jan 12 14:14:18 2025
 
 VERBOSE = True
 
-ROOT_PATH = "/home/labs/fleishman/itayta/fitness"
-#ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+#ROOT_PATH = "/home/labs/fleishman/itayta/fitness"
+ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
 
 
 

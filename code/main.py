@@ -194,7 +194,6 @@ def load_structure_decoder(device="cpu",
     
     return model    
 
-
 def load_model(lora_weights=True, 
                device="cpu",
                weights_path=WEIGHTS_PATH,

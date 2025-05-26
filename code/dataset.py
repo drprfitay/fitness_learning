@@ -13,23 +13,56 @@ from constants import *
 
 from torch.utils.data import Dataset
 
+class EnergyDataset(Dataset):
+    def __init__(self, dataset_name, size=200):
+
+        self.sequence_tensor = torch.load("%s/%s/sequences.pth" %  (DATASETS_PATH, dataset_name))        
+        self.size = size
+        lbls_all = self.sequence_tensor[:,self.sequence_tensor.shape[1] - 1]
+        cts = torch.unique(lbls_all, return_counts=True)
+        s, indices = torch.sort(lbls_all)
+        ones = indices[cts[1][0]:self.sequence_tensor.shape[0]]
+        zeros = indices[0:cts[1][0]]
+        half = self.size // 2
+        sampled_ones = ones[torch.randperm(len(ones))[0:half]]
+        sampled_zeros = zeros[torch.randperm(len(zeros))[0:half]]
+        
+        
+        
+        self.sampled_sequences = self.sequence_tensor[torch.cat([sampled_ones,sampled_zeros]),:]
+        
+    def __len__(self):
+        #return len(self.unique_sequences)
+        return (self.size)
+
+    def __getitem__(self, idx):
+        #seq = self.unique_sequences[idx]
+        x = self.sampled_sequences[idx,0:(self.sampled_sequences.shape[1] - 1)]
+        lbl = self.sampled_sequences[idx,(self.sampled_sequences.shape[1] - 1)]
+        return x,lbl
+
 
 class RawTokensDataset(Dataset):
-    def __init__(self, dataset_name, mode=None, scale=True):
-        
+    def __init__(self, dataset_name, mode=None, scale=True, return_labels=False):
+
         self.sequence_df = pd.read_csv("%s/%s/sequences.csv" %  (DATASETS_PATH, dataset_name))
         self.unique_sequences = pd.unique(self.sequence_df["sequence"])
         self.dataset_name = dataset_name
         self.load = torch.load
         self.mode = mode
         self.scale = scale
+        self.return_labels = return_labels
+        self.size = 4171
+        self.sampled = torch.randperm(len(self.unique_sequences))[0:self.size]
 
                                         
     def __len__(self):
-        return len(self.unique_sequences)
+        #return len(self.unique_sequences)
+        return (self.size)
 
     def __getitem__(self, idx):
-        seq = self.unique_sequences[idx]
+        #seq = self.unique_sequences[idx]
+        seq = self.unique_sequences[self.sampled[idx]]
         
         # Load data lazily (Example: Assume images in .png format)
         data = self.load("%s/%s/tokens/tokens_%s.pth" % (DATASETS_PATH, 
@@ -42,7 +75,11 @@ class RawTokensDataset(Dataset):
                 #     dp = (dp - torch.min(dp, axis=0)[0]) / (torch.max(dp, axis=0)[0] - torch.min(dp, axis=0)[0])
                 #dp = (dp - torch.mean(dp, axis=0)) / (torch.std(dp, axis=0))
                 dp = dp[1:-2,:]
-            return(dp)
+                
+            if self.return_labels:
+                return (dp, torch.tensor(int(sum(data["activity_labels_values"][0][2:4]) > 0), dtype=torch.float))
+            else:
+                return(dp)
         
         return data
 
