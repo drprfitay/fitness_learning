@@ -1,0 +1,541 @@
+# -*- coding: utf-8 -*-
+
+import sys, os
+import torch
+import torch.nn.functional as F
+import loralib as lora
+import scipy.stats
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+import einops
+import yaml
+
+from esm_smart_dataset import *
+from sequence_space_utils import *
+
+from Bio import pairwise2
+from Bio.Seq import Seq
+from Bio.Align import substitution_matrices
+from Bio import SeqIO
+
+from random import sample
+
+blosum62 = substitution_matrices.load("BLOSUM62")
+
+
+ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+RESULTS_PATH = "%s/results" % ROOT_PATH
+ITAYFOLD_PATH = "%s/itayFold/" % ROOT_PATH
+WEIGHTS_PATH = "/%s/weights/" % ITAYFOLD_PATH
+
+MSA_PATH = "%s/data/datasets/msa/" % ROOT_PATH
+
+STOCK_MSAS = ["1a3a_1_A.a3m", 
+              "5ahw_1_A.a3m", 
+              "1xcr_1_A.asm",
+              "gfp2.aln"]
+
+MODEL_WEIGHTS_FILE_NAME = "esm3/esm_model_weights.pth"
+LORA_WEIGHTS_FIlE_NAME =  "esm3/esm_lora_weights.pth"
+ENCODER_WEIGHTS_FILE_NAME = "esm3/structure_encoder.pth"
+DECODER_WEIGHTS_FILE_NAME = "esm3/structure_decoder.pth"
+
+
+
+ROOT_DMS_PATH = "%s/data/datasets/DMS/Data" % ROOT_PATH
+BASE_DMS_PATH = "%s/data/" % ROOT_DMS_PATH
+BASE_DMS_PDB_PATH = "%s/structure_data/" % ROOT_DMS_PATH 
+
+def fix_esm_path():
+    global original_sys_path
+    
+    # Specify the module name and path
+    module_name = "esm"
+    module_path = ITAYFOLD_PATH 
+    
+    # Store the original sys.path
+    original_sys_path = sys.path.copy()
+
+    # Temporarily add the local directory to sys.path
+    sys.path.insert(0, os.path.abspath(module_path))
+
+    # hack
+    for mdl in [k for k,v in sys.modules.items() if module_name in k]:
+        del sys.modules[mdl]
+
+fix_esm_path()
+
+import esm2
+import string
+
+
+deletekeys = dict.fromkeys(string.ascii_lowercase)
+deletekeys["."] = None
+deletekeys["*"] = None
+translation = str.maketrans(deletekeys)
+    
+def read_sequence(filename: str) -> tuple[str, str]:
+    """ Reads the first (reference) sequences from a fasta or MSA file."""
+    record = next(SeqIO.parse(filename, "fasta"))
+    return record.description, str(record.seq)
+
+def remove_insertions(sequence: str) -> str:
+    """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
+    return sequence.translate(translation)
+
+def read_msa(filename: str) -> list[tuple[str, str]]:
+    """ Reads the sequences from an MSA file, automatically removes insertions."""
+    return [(record.description, remove_insertions(str(record.seq))) for record in SeqIO.parse(filename, "fasta")]
+
+
+def load_esm2_model_and_alphabet(model_name):
+    supported_esm2_models =\
+        ["esm1_t34_670M_UR50S",
+         "esm1_t34_670M_UR50D",
+         "esm1_t34_670M_UR100",
+         "esm1_t12_85M_UR50S",
+         "esm1_t6_43M_UR50S",
+         "esm1b_t33_650M_UR50S",
+         "esm_msa1_t12_100M_UR50S",
+         "esm_msa1b_t12_100M_UR50S",        
+         "esm1v_t33_650M_UR90S_1",
+         "esm1v_t33_650M_UR90S_2",
+         "esm1v_t33_650M_UR90S_3",
+         "esm1v_t33_650M_UR90S_4",
+         "esm1v_t33_650M_UR90S_5",
+         "esm_if1_gvp4_t16_142M_UR50",
+         "esm2_t6_8M_UR50D",
+         "esm2_t12_35M_UR50D",
+         "esm2_t30_150M_UR50D",
+         "esm2_t33_650M_UR50D",
+         "esm2_t36_3B_UR50D",
+         "esm2_t48_15B_UR50D"]
+        
+    if model_name not in supported_esm2_models:
+        raise BaseException("Unsupported model %s, model must be in: %s" %\
+                              (model_name, ", ".join(supported_esm2_models)))
+        
+    model_weights_and_data_path = "%s/esm2/%s.pth" % (WEIGHTS_PATH, model_name)
+    
+    if model_weights_and_data_path in os.listdir("%s/esm2" % WEIGHTS_PATH):
+        model_data = torch.load(model_weights_and_data_path)
+    else:    
+        model_data, regression_data = esm2.pretrained._download_model_and_regression_data(model_name)
+        
+        if regression_data is not None:
+            model_data["model"].update(regression_data["model"])
+            
+        # Save model data
+        torch.save(model_data, model_weights_and_data_path)
+        
+    return esm2.pretrained.load_model_and_alphabet_core(model_name, 
+                                                        model_data, 
+                                                        regression_data=None)
+        
+
+def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbose=False):
+        
+    indices = np.repeat(False, sequence_df.shape[0])
+        
+    if type(nmuts) == int:
+        nmuts = [nmuts]
+            
+    for nm in nmuts:
+        indices = indices | (sequence_df[nmuts_column] == nm).to_numpy()
+        if verbose:
+            print("Indices included: %d" % sum(indices))
+            
+    if rev:
+        indices = ~indices
+            
+    return(np.where(indices)[0].tolist())
+
+
+
+
+def train_esm_model(dataset_path=None,
+                    save_path=None,
+                    device="cpu",
+                    model_name="esm2_t33_650M_UR50D",
+                    pretrained_weights_path=None,
+                    loss=["nll", "orpo", "dkl"],
+                    loss_weights={'dkl': 1, 'orpo': 1, 'nll': 1},
+                    learning_rate=1e-5,
+                    weight_decay=0.1,
+                    indices=None,
+                    batch_size=20,
+                    iterations=20000,
+                    checkpoint_every=5000,
+                    mask_type="Both",   
+                    ref_seq=None,
+                    full_mask_pos_func=get_mutated_position_function_gfp,
+                    partial_mask_pos_func=get_mutated_position_function_gfp_n2,
+                    num_muts_column_name="num_of_muts",
+                    activity_column_name='is_unsorted',
+                    sequence_column_name="FullSeq",
+                    verbose=True):       
+    
+    
+    def validate_input(input_received, supported_types):
+        if input_received not in supported_types:
+            raise BaseException("Unsupported device %s, device must be in: %s" %\
+                                  (input_received, ", ".join(supported_types)))
+                
+    
+    supported_devices = ["cpu", "mps", "cuda"]    
+    validate_input(device, supported_devices)
+    
+    # Select device
+
+    if device == "cpu":
+        device = torch.device("cpu")
+    elif device == "mps":    
+        device = torch.device("mps" if torch.backends.mps.is_available() and torch.backends.mps.is_built() else "cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() and torch.backends.cuda.is_built() else "cpu")
+        
+    if verbose:
+        print("\t1. Using device: %s" % str(device))
+            
+    
+    # Select model
+    model, esm2_alphabet  = load_esm2_model_and_alphabet(model_name)
+    model = model.to(device)
+    
+    if verbose:
+        print("\t2. Using esm base model: %s" % model_name)
+    
+    supported_loss_functions = ["dkl", "orpo", "jsd", "nll", "dpo"]
+    
+    if type(loss) != list:
+        loss = [loss]
+        
+    loss_to_use = dict([(s, False) for s in supported_loss_functions])
+    
+    for sub_loss in loss:
+        validate_input(sub_loss, supported_loss_functions)                
+        loss_to_use[sub_loss] = True
+        
+    missing_keys = [k for k in loss if k not in loss_weights.keys()]
+    if len(missing_keys) > 0:
+       raise BaseException("Missing loss weight for loss terms: %s" % ", ".join(missing_keys))
+                
+    loss_str = "_".join(loss)    
+    
+    if verbose:
+        print("\t3. Using loss: %s" % ", ".join(loss))
+        
+        
+    if verbose:
+        print("\t4. Learning rate %.8f, weight decay: %.3f" % (learning_rate, weight_decay))
+    
+    if pretrained_weights_path is not None:
+        params = torch.load("%s/%s.pt" % (saved_weights_path, project_name))
+        model.load_state_dict(params["model_params"])
+        
+    
+    
+    supported_indices_modes = ["mutations", "indices", "random_sample"]
+    
+    
+    if type(indices) != dict and len(indices) != 1:
+        raise BaseException("When specifying indices, use the following format: indices = {\"mutations\": RELEVANT PARAMS}")
+    
+    indices_mode = [k for k in indices.keys()][0]
+    
+    validate_input(indices_mode, supported_indices_modes)
+    
+    if indices_mode == "mutations":
+        mutations_to_include = indices[indices_mode]
+        
+        train_mutations_func=lambda sdf: get_indices(sdf, mutations_to_include, nmuts_column=num_muts_column_name),
+        test_mutations_func=lambda sdf: get_indices(sdf, mutations_to_include, nmuts_column=num_muts_column_name, rev=True),
+        
+        muts_str = "muts_%s" % "_".join([str(m) for m in mutations_to_include])
+        
+        print("\t5. Indices based on mutations: %s" % ", ".join([str(m) for m in mutations_to_include]))
+    else:
+        raise BaseException("Random sample and ind are currently not supported")
+        
+        
+        
+    supported_masks = ["both", "partial", "full"]
+    validate_input(mask_type, supported_masks)
+    
+    if mask_type == "both":
+        use_full_only = False
+        use_partial_only = False
+    elif mask_type == "partial":
+        use_full_only = False
+        use_partial_only = True
+    else:
+        use_full_only = True
+        use_partial_only = False
+    
+    
+    print("\t6. Mask type chosen: %s" % mask_type)
+    
+    project_name = "model_%s_loss_%s_indices_%s_mask_type_%s_lr_%.8f_wd_%.3f_iter_%d_bs_%d" %\
+        (model_name,
+         loss_str,
+         muts_str,
+         mask_type,
+         learning_rate,
+         weight_decay,
+         iterations,
+         batch_size)
+    
+    
+    
+    eval_path = "%s/%s" % (save_path, project_name)
+    os.makedirs(eval_path, exist_ok=True)
+    weights_path = "%s/weights" % (eval_path)
+    os.makedirs(weights_path, exist_ok=True)
+    
+    
+    dataset_class_kwargs = {}
+    dataset_class_kwargs["train_project_name"] = project_name
+    dataset_class_kwargs["dataset_path"] = dataset_path
+    dataset_class_kwargs["evaluation_path"] = eval_path
+    dataset_class_kwargs["train_indices"] = train_mutations_func
+    dataset_class_kwargs["test_indices"] = test_mutations_func
+    dataset_class_kwargs["esm_model"] = model
+    dataset_class_kwargs["esm_alphabet"] = esm2_alphabet
+    dataset_class_kwargs["full_mask_mut_positions"] = full_mask_pos_func
+    dataset_class_kwargs["partial_mask_mut_positions"] = partial_mask_pos_func
+    dataset_class_kwargs["use_full_mask_only"] = use_full_only
+    dataset_class_kwargs["use_partial_mask_only"] = use_partial_only
+    dataset_class_kwargs["ref_seq"] = ref_seq
+    dataset_class_kwargs["model_name"] = model_name
+    dataset_class_kwargs["sequence_column_name"] = sequence_column_name
+    dataset_class_kwargs["activity_column_name"] = activity_column_name
+    dataset_class_kwargs["mini_batch_size"] = batch_size
+    dataset_class_kwargs["cache"] = True
+    dataset_class_kwargs["labels_dtype"] = torch.int64
+    
+    
+    dataset = Esm2SequenceActivityTrainTest(**dataset_class_kwargs)
+    
+    len_ref_seq = len(ref_seq)
+    
+
+    # batch_size is 1 as batches are internally implemented
+    train_data_loader = torch.utils.data.DataLoader(dataset, 
+                                                    batch_size=1, 
+                                                    shuffle=True)
+    optimizer = torch.optim.Adam(model.parameters(), 
+                                 lr=learning_rate, 
+                                 weight_decay=weight_decay)
+    
+    loss = torch.nn.CrossEntropyLoss().to(device)
+    dkl_loss = torch.nn.KLDivLoss().to(device)
+    dataset.train_dataset_partial_mask.one_hot_mut_info =\
+        dataset.train_dataset_partial_mask.one_hot_mut_info.to(device)
+        
+    dataset.train_dataset_full_mask.one_hot_mut_info =\
+        dataset.train_dataset_full_mask.one_hot_mut_info.to(device)      
+        
+    separation = torch.tensor(0)
+    
+        
+    wt_tokens = torch.tensor(esm2_alphabet.encode("<cls>" + ref_seq + "<eos>"), dtype=torch.int64, device=device).view((1,-1))
+    eos_token = torch.tensor(esm2_alphabet.encode("<eos>"), dtype=torch.int64, device=device) 
+    mask_token = torch.tensor(esm2_alphabet.encode("<mask>"), dtype=torch.int64, device=device)        
+    
+    
+    for epoch in range(0, 2000):
+        for data_iter_step, batch in enumerate(train_data_loader):
+            # training loop
+            model.train()        
+                
+            # positives = batch[0][0].to(device)
+            # negatives = batch[0][1].to(device)
+            # one_hot_positions = batch[0][2].view((1,1,-1)).to(device)
+            # pair_indices = batch[0][3]
+            # is_full = batch[1][0] == "full"
+            
+            
+            positives = batch[0].to(device)
+            negatives = batch[1].to(device)
+            one_hot_positions = batch[2].view((1,1,-1)).to(device)
+            pair_indices = batch[3]
+            is_full = True
+            
+            _, B, S = positives.size()
+            
+            pad=torch.tensor(0, device=device).view((1,1,1))
+            padded_masked_tensor = torch.cat([pad, one_hot_positions, pad], dim=2)
+            padded_mutated_positions = (padded_masked_tensor == 1)
+            
+    
+            batched_sequences_to_run_with_masks = ((torch.ones(padded_masked_tensor.shape, dtype=torch.int64, device=device) - padded_masked_tensor) * positives[0,0,:])
+            batched_sequences_to_run_with_masks += padded_masked_tensor * mask_token # add masks                
+            
+            
+            optimizer.zero_grad()
+            logits = model(batched_sequences_to_run_with_masks.view((1,-1)))
+            masked_logits = logits["logits"][0,:,:]
+                    
+            pssm = masked_logits[1:-1,:].softmax(dim=1).view((len_ref_seq, -1))
+                    
+            
+            pos_indices = torch.unique(pair_indices[:,:,0].view(-1))
+            neg_indices = torch.unique(pair_indices[:,:,1].view(-1))
+            indices = torch.cat([pos_indices,neg_indices]).to(device)
+            pos_labels = torch.tensor(1, device=device).repeat(pos_indices.shape[0])
+            neg_labels = torch.tensor(0, device=device).repeat(neg_indices.shape[0])
+            labels = torch.cat([pos_labels, neg_labels])
+            
+            if is_full:
+                relevant_one_hot  = dataset.train_dataset_full_mask.one_hot_mut_info
+            else:
+                relevant_one_hot  = dataset.train_dataset_partial_mask.one_hot_mut_info
+                
+            mutated_positions = one_hot_positions == 1
+            
+            from_mutation = relevant_one_hot[0][indices,:]
+            to_mutation = relevant_one_hot[1][indices,:]
+        
+            predicted_fitness =\
+                fitness_from_prob_non_dms(pssm[mutated_positions.view(-1)],#pssm[mutated_positions],
+                                          from_mutation[:,mutated_positions.view((-1))][0],
+                                          to_mutation[:,mutated_positions.view((-1))],
+                                          device=device)
+                        
+
+            masked_logits_repeat = masked_logits[padded_mutated_positions.view((-1)),:].repeat(B,1,1)
+            masked_logits_repeat = einops.rearrange(masked_logits_repeat, 'B S C -> B C S')
+            positive_generations = positives[:,:,padded_mutated_positions.view(-1)].squeeze(dim=0)
+            negative_generations = negatives[:,:,padded_mutated_positions.view(-1)].squeeze(dim=0)
+            
+            print(masked_logits_repeat.softmax(dim=1).argmax(dim=1)[0])
+            nll_loss = loss(masked_logits_repeat, positive_generations)
+            dkl = -dkl_loss(predicted_fitness,labels.to(torch.float32))
+            
+            total_loss = dkl + nll_loss
+            #total_loss = dpo_loss
+            total_loss.backward()
+            print("Loss (%.3f [DKL:%.3f, NLL:%.3f]) [Epoch %d, I %d]" %\
+                  (total_loss.item(),
+                   dkl.item(),
+                   nll_loss.item(),
+                   epoch, 
+                   data_iter_step))
+                
+            optimizer.step()
+            
+            if data_iter_step % 20 == 0:
+                evaluation_metric =\
+                    dataset.evaluate_full(is_msa_transformer=False, 
+                                          return_act_inact=True,
+                                          device=device)
+                new_separation = np.median(evaluation_metric[0]) - np.median(evaluation_metric[1])
+                
+                if new_separation > separation:
+                    print("Saving new model (improved from %.3f to %.3f" % (separation, new_separation))
+                    separation = new_separation
+                    
+                    model_params = model.state_dict()
+                    optimizer_params = optimizer.state_dict()
+                    saved_dict = {"model_params ":model_params,
+                                  "optimizer_params":optimizer_params}
+                    
+                    torch.save(saved_dict, "%s/best_sep_%s.pt" % (saved_weights_path, project_name))
+        
+
+
+    save_weights = True
+    
+    model_params = model.state_dict()
+    optimizer_params = optimizer.state_dict()
+    saved_dict = {"model_params ":model_params,
+                  "optimizer_params":optimizer_params}
+    
+    torch.save(saved_dict, "%s/final_10k_%s.pt" % (saved_weights_path, project_name))
+
+
+
+
+def evaluate():  
+    device = torch.device("mps" if torch.backends.mps.is_available() and torch.backends.mps.is_built() else "cpu")
+    
+    pre_load_weights = True
+    mutations_to_include = [1,2,3,4]
+    dpo_beta = .5
+    BATCH_SIZE = 256
+    project_name = "esm2_600m_orpo_nll_%s" % "_".join([str(m) for m in mutations_to_include])
+    root_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/"
+    base_path = "%s/data/configuration/" % root_path
+    #test_path = "%s/fixed_unique_gfp_sequence_dataset_full_seq_test.csv" % base_path
+    dataset_path = "%s/fixed_unique_gfp_sequence_dataset_full_seq.csv" % base_path
+    saved_weights_path = "/%s/itayFold/weights/esm2/retrained/esm2_600m_experiments/" % root_path
+    evaluation_path  = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/results/gfp_dataset/finetuned_models_evaluated"
+    
+    model_name = "esm2_t33_650M_UR50D"
+    model, esm2_alphabet  = load_esm2_model_and_alphabet(model_name)
+    model = model.to(device)
+    #msa_converter = esm2_alphabet.get_batch_converter()     
+    
+    if pre_load_weights:
+        params = torch.load("%s/best_sep_%s.pt" % (saved_weights_path, project_name))
+        model.load_state_dict(params["model_params "])
+    
+            
+    jonathans_reference_sequence = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
+
+
+    wt_tokens = torch.tensor(esm2_alphabet.encode("<cls>" + jonathans_reference_sequence + "<eos>"), dtype=torch.int64, device=device).view((1,-1))
+    eos_token = torch.tensor(esm2_alphabet.encode("<eos>"), dtype=torch.int64, device=device) 
+    mask_token = torch.tensor(esm2_alphabet.encode("<mask>"), dtype=torch.int64, device=device)        
+    
+    dataset = \
+        Esm2SequenceActivityTrainTest(project_name,
+                                      evaluation_path,
+                                      dataset_path,
+                                      lambda sdf: get_indices(sdf, mutations_to_include),
+                                      lambda sdf: get_indices(sdf, mutations_to_include, rev=True),
+                                      model,
+                                      esm2_alphabet,
+                                      full_mask_mut_positions=get_mutated_position_function_gfp,
+                                      partial_mask_mut_positions=get_mutated_position_function_gfp_n2,
+                                      use_full_mask_only=False,
+                                      cache=True,
+                                      model_name="esm2",
+                                      activity_column_name='is_unsorted',
+                                      sequence_column_name="FullSeq",
+                                      ref_seq=jonathans_reference_sequence,
+                                      labels_dtype=torch.int64)
+        
+    
+    dataset.evaluate_across_masks(device=device)   
+    #dataset.evaluate_full(is_msa_transformer=False)
+
+
+yaml_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/retraining_esm/example_conf.yaml"
+    
+with open(yaml_path, "r") as file:
+    data = yaml.safe_load(file)
+   
+
+full_mask_pos_func = lambda sdf:\
+    get_mutated_position_full_mask_by_first_last_colname(sdf, 
+                                                         data["first_mutation_column_name"],
+                                                         data["last_mutation_column_name"])
+    
+partial_mask_pos_func = lambda sdf:\
+    get_mutated_position_partial_mask_by_first_last_colname(sdf, 
+                                                            data["first_mutation_column_name"],
+                                                            data["last_mutation_column_name"])
+
+
+data["full_mask_pos_func"] = full_mask_pos_func
+data["partial_mask_pos_func"] = partial_mask_pos_func
+
+data.pop("first_mutation_column_name")
+data.pop("last_mutation_column_name")
+
+if type(data["learning_rate"]) != float:
+    data["learning_rate"] = float(data["learning_rate"])
+
+train_esm_model(**data)
