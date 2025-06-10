@@ -18,6 +18,10 @@ from random import sample
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
+import warnings
+#warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+warnings.filterwarnings("ignore", message=".*add_safe_globals.*")
+
 class EsmBaseSequenceActivityDataset(Dataset):
     def __init__(self,
                  dataset_path,
@@ -474,6 +478,7 @@ class Esm2SequenceActivityDataset(EsmBaseSequenceActivityDataset):
                      labels_dtype=torch.float64):
             
             self.esm_alphabet = esm_alphabet
+
             
             # For compatibility, esm3 encoder adds these tokens automatically
             def esm2_seq_encode(seq):
@@ -507,6 +512,11 @@ class Esm2SequenceActivityDataset(EsmBaseSequenceActivityDataset):
                 
             # subset based on indices
             if indices is not None:
+                
+                # Monkey patch!!!!!!
+                if type(indices) == tuple:
+                   indices = indices[0]
+                    
                 #subset based on indices            
                 
                 if callable(indices):
@@ -656,7 +666,7 @@ class Esm2SequenceActivityContrastiveDatasetAdvancedMask(Esm2SequenceActivityDat
                 # enough variants that fit into mask to create a pair
                 
                 if (pair_size[0] < 1 or pair_size[1] < 1):
-                    print(pair_size)
+                    #print(pair_size)
                     continue
                 
                 
@@ -768,6 +778,9 @@ class Esm2SequenceActivityTrainTest(Dataset):
             self.s_i=s_i
             self.e_i=e_i
             self.labels_dtype=labels_dtype
+        
+            if type(self.train_indices) == tuple:
+                self.train_indices = self.train_indices[0]
     
             if type(self.test_indices) == tuple:
                 self.test_indices = self.test_indices[0]
@@ -781,7 +794,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
         
             self.train_dataset_full_mask = \
                 Esm2SequenceActivityContrastiveDataset(self.train_dataset_path,
-                                                       train_indices,
+                                                       self.train_indices,
                                                        esm_alphabet,
                                                        full_mask_mut_positions,
                                                        cache,
@@ -798,7 +811,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
             self.train_dataset_partial_mask = \
                     Esm2SequenceActivityContrastiveDatasetAdvancedMask(\
                                                            self.train_dataset_path,
-                                                           train_indices,
+                                                           self.train_indices,
                                                            esm_alphabet,
                                                            partial_mask_mut_positions,
                                                            cache,
@@ -957,7 +970,9 @@ class Esm2SequenceActivityTrainTest(Dataset):
                           is_msa_transformer=False,
                           return_results=False,
                           return_act_inact=False,
-                          device=torch.device("cpu")):
+                          device=torch.device("cpu"),
+                          plot=False,
+                          save=False):
             
             self.esm_model.to(device)
             
@@ -1021,7 +1036,13 @@ class Esm2SequenceActivityTrainTest(Dataset):
             act = predicted_fitness[positives].cpu().detach().numpy()
             ina = predicted_fitness[negatives].cpu().detach().numpy()
                   
-            plot_hists(act, ina)                   
+            
+            if plot:
+                if save:
+                    save_path = "%s/best_sep_on_validatino.png" % self.evaluation_path
+                else:
+                    save_path = None
+                plot_hists(act, ina, save_path=save_path)                   
         
             if return_act_inact:
                 return(act, ina)
@@ -1050,9 +1071,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
             train_results_filename = "train_results.pt" 
             test_results_filename = "test_results.pt"
             files_in_cache = os.listdir(save_path)
-                    
-            
-                
+                                            
 
             if hp:
                 inf_model = self.esm_model.half()

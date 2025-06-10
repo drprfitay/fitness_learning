@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 def fitness_from_prob(pssm, wt_tensor, variant_tensor):    
     wt_one_hot = torch.nn.functional.one_hot(torch.tensor(wt_tensor), pssm.shape[1])
@@ -94,32 +95,32 @@ def align_sequences(misaligned_seq):
 
 
 
-# # Has to return a list of from, to, pos (PDB pos - one based index!!!)
-# def get_mutated_position_full_mask_by_first_last_colname(sequence_df, first_col, last_col):
+# Has to return a list of from, to, pos (PDB pos - one based index!!!)
+def get_mutated_position_full_mask_by_first_last_colname(sequence_df, first_col, last_col):
     
-#     si = np.where(sequence_df.columns == first_col)[0][0]
-#     ei = np.where(sequence_df.columns == last_col)[0][0] + 1
-#     pos = [int(x[1:]) for x in sequence_df.columns[si:ei].to_list()]
-#     from_mut = [x[0] for x in sequence_df.columns[si:ei].to_list()]
-#     to_mut = [list(x) for x in sequence_df.sequence.to_list()]
+    si = np.where(sequence_df.columns == first_col)[0][0]
+    ei = np.where(sequence_df.columns == last_col)[0][0] + 1
+    pos = [int(x[1:]) for x in sequence_df.columns[si:ei].to_list()]
+    from_mut = [x[0] for x in sequence_df.columns[si:ei].to_list()]
+    to_mut = [list(x) for x in sequence_df.sequence.to_list()]
     
-#     return [from_mut], to_mut, [pos]
+    return [from_mut], to_mut, [pos]
 
 
 
-# # Has to return a list of from, to, pos (PDB pos - one based index!!!)
-# def get_mutated_position_partial_mask_by_first_last_colname(sequence_df, first_col, last_col):
+# Has to return a list of from, to, pos (PDB pos - one based index!!!)
+def get_mutated_position_partial_mask_by_first_last_colname(sequence_df, first_col, last_col):
     
-#     si = np.where(sequence_df.columns == first_col)[0][0]
-#     ei = np.where(sequence_df.columns == last_col)[0][0] + 1
-#     pos = [int(x[1:]) for x in sequence_df.columns[si:ei].to_list()]
-#     from_mut = [x[0] for x in sequence_df.columns[si:ei].to_list()]
+    si = np.where(sequence_df.columns == first_col)[0][0]
+    ei = np.where(sequence_df.columns == last_col)[0][0] + 1
+    pos = [int(x[1:]) for x in sequence_df.columns[si:ei].to_list()]
+    from_mut = [x[0] for x in sequence_df.columns[si:ei].to_list()]
     
-#     to_mut = [[aa for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
-#     pos_var = [[pos[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
-#     from_mut_var = [[from_mut[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
+    to_mut = [[aa for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
+    pos_var = [[pos[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
+    from_mut_var = [[from_mut[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
     
-#     return from_mut_var, to_mut, pos_var
+    return from_mut_var, to_mut, pos_var
 
 
 # Has to return a list of from, to, pos (PDB pos - one based index!!!)
@@ -150,11 +151,19 @@ def get_mutated_position_function_gfp_n2(sequence_df):
     return from_mut_var, to_mut, pos_var
 
 
-def plot_hists(active, inactive):
-    plt.hist(active, bins=30, alpha=0.6, label='Active', color='green', density=False)
-    plt.hist(inactive, bins=30, alpha=0.6, label='Inactive', color='gray', density=False)
-    plt.title("Overlaid Histograms")
+def plot_hists(active, inactive, save_path=None):
+    plt.hist(active, bins=30, alpha=0.6, label='Active', color='green', density=True)
+    plt.hist(inactive, bins=30, alpha=0.6, label='Inactive', color='gray', density=True)
+        
+    plt.title("Overlaid Histograms [Separation: %.4f]" % float(np.median(active) - np.median(inactive)))
     plt.xlabel("Value")
     plt.ylabel("Frequency")
     plt.legend()
-    plt.show()
+    
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+    plt.show(block=False)
+    plt.pause(8)
+    #time.sleep(8)
+    plt.close()
