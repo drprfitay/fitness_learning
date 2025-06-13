@@ -96,29 +96,29 @@ def align_sequences(misaligned_seq):
 
 
 # Has to return a list of from, to, pos (PDB pos - one based index!!!)
-def get_mutated_position_full_mask_by_first_last_colname(sequence_df, first_col, last_col):
+def get_mutated_position_full_mask_by_first_last_colname(sequence_df, first_col, last_col, sequence_col):
     
     si = np.where(sequence_df.columns == first_col)[0][0]
     ei = np.where(sequence_df.columns == last_col)[0][0] + 1
     pos = [int(x[1:]) for x in sequence_df.columns[si:ei].to_list()]
     from_mut = [x[0] for x in sequence_df.columns[si:ei].to_list()]
-    to_mut = [list(x) for x in sequence_df.sequence.to_list()]
+    to_mut = [list(x) for x in sequence_df[sequence_col].to_list()]
     
     return [from_mut], to_mut, [pos]
 
 
 
 # Has to return a list of from, to, pos (PDB pos - one based index!!!)
-def get_mutated_position_partial_mask_by_first_last_colname(sequence_df, first_col, last_col):
+def get_mutated_position_partial_mask_by_first_last_colname(sequence_df, first_col, last_col, sequence_col):
     
     si = np.where(sequence_df.columns == first_col)[0][0]
     ei = np.where(sequence_df.columns == last_col)[0][0] + 1
     pos = [int(x[1:]) for x in sequence_df.columns[si:ei].to_list()]
     from_mut = [x[0] for x in sequence_df.columns[si:ei].to_list()]
     
-    to_mut = [[aa for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
-    pos_var = [[pos[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
-    from_mut_var = [[from_mut[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df.sequence.to_list()]
+    to_mut = [[aa for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df[sequence_col].to_list()]
+    pos_var = [[pos[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df[sequence_col].to_list()]
+    from_mut_var = [[from_mut[i] for i,aa in enumerate(x) if aa != from_mut[i]] for x in sequence_df[sequence_col].to_list()]
     
     return from_mut_var, to_mut, pos_var
 

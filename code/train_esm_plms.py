@@ -232,12 +232,7 @@ def validate_args(\
         
     if verbose:
         print("\t4. Learning rate %.8f, weight decay: %.3f" % (learning_rate, weight_decay))
-    
-    if pretrained_weights_path is not None:
-        params = torch.load("%s/%s.pt" % (weights_path, project_name))
-        model.load_state_dict(params["model_params"])
         
-    
     
     supported_indices_modes = ["mutations", "indices", "random_sample"]
     
@@ -379,9 +374,25 @@ def train_esm_model(dataset_path=None,
     train_data_loader = torch.utils.data.DataLoader(dataset, 
                                                     batch_size=1, 
                                                     shuffle=True)
+    
+    
     optimizer = torch.optim.Adam(model.parameters(), 
                                  lr=learning_rate, 
                                  weight_decay=weight_decay)
+    
+    # pretrained_weights_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/retraining_esm/model_esm2_t33_650M_UR50D_loss_nll_dkl_orpo_indices_muts_1_2_3_4_5_mask_type_partial_lr_0.00001000_wd_0.100_iter_20000_bs_20/weights/final_checkpoint_model_esm2_t33_650M_UR50D_loss_nll_dkl_orpo_indices_muts_1_2_3_4_5_mask_type_partial_lr_0.00001000_wd_0.100_iter_20000_bs_20.pt"
+    
+    # if pretrained_weights_path is not None:
+    #     params = torch.load(pretrained_weights_path)
+    #     model.load_state_dict(params["model_params "])
+        
+        
+    #     optimizer = torch.optim.Adam(model.parameters(), 
+    #                                  lr=learning_rate, 
+    #                                  weight_decay=weight_decay)
+    #     optimizer.load_state_dict(params["optimizer_params"])
+        
+    #     iterations -= params["checkpoint"]
     
     loss = torch.nn.CrossEntropyLoss().to(device)
     dkl_loss = torch.nn.KLDivLoss().to(device)
@@ -397,7 +408,10 @@ def train_esm_model(dataset_path=None,
     wt_tokens = torch.tensor(esm2_alphabet.encode("<cls>" + ref_seq + "<eos>"), dtype=torch.int64, device=device).view((1,-1))
     eos_token = torch.tensor(esm2_alphabet.encode("<eos>"), dtype=torch.int64, device=device) 
     mask_token = torch.tensor(esm2_alphabet.encode("<mask>"), dtype=torch.int64, device=device)        
-        
+    
+    ongoing_s = 0
+    ongoing_f = 0    
+    
     n_epochs = ceil(iterations / len(train_data_loader))
     total_steps = 0
     
@@ -468,6 +482,15 @@ def train_esm_model(dataset_path=None,
                                               device=device)
                     
                 dkl = -dkl_loss(predicted_fitness,labels.to(torch.float32))
+                
+                
+                if predicted_fitness[labels == 1].mean().cpu().item() > predicted_fitness[labels == 0].mean().cpu().item():
+                    ongoing_s += 1
+                else: 
+                    ongoing_f += 1
+                
+                print("[S%d:F%d] - %.3f : %.3f" % (ongoing_s, ongoing_f, predicted_fitness[labels == 1].mean().cpu().item(),
+                                        predicted_fitness[labels == 0].mean().cpu().item()))
                 
                 loss_str.append("DKL: %.3f" % dkl.item())
                 total_loss += torch.tensor(loss_weights["dkl"], device=device) * dkl
@@ -653,8 +676,8 @@ def main():
     args = parser.parse_args()
 
     
-    yaml_path = args.yaml_path
-    #yaml_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/retraining_esm/esm1_example_conf.yaml"
+    #yaml_path = args.yaml_path
+    yaml_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/retraining_esm/example_conf.yaml"
     
         
     with open(yaml_path, "r") as file:
@@ -663,16 +686,19 @@ def main():
         
     fc = data.pop("first_mutation_column_name")
     lc = data.pop("last_mutation_column_name")
+    sc = data["sequence_column_name"]
     
     def full_mask_pos_func(sdf):
         return get_mutated_position_full_mask_by_first_last_colname(sdf, 
                                                                     first_col=fc,
-                                                                    last_col=lc)
+                                                                    last_col=lc,
+                                                                    sequence_col=sc)
         
     def partial_mask_pos_func(sdf):
         return get_mutated_position_partial_mask_by_first_last_colname(sdf, 
                                                                        first_col=fc,
-                                                                       last_col=lc)
+                                                                       last_col=lc,
+                                                                       sequence_col=sc)
     
     data["full_mask_pos_func"] = full_mask_pos_func
     data["partial_mask_pos_func"] = partial_mask_pos_func
