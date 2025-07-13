@@ -209,7 +209,7 @@ def validate_args(\
     if verbose:
         print("\t2. Using esm base model: %s" % model_name)
     
-    supported_loss_functions = ["dkl", "orpo", "jsd", "nll", "dpo"]
+    supported_loss_functions = ["dkl", "orpo", "jsd", "nll", "dpo", "max_diff"]
     
     if type(loss) != list:
         loss = [loss]
@@ -409,8 +409,10 @@ def train_esm_model(dataset_path=None,
     eos_token = torch.tensor(esm2_alphabet.encode("<eos>"), dtype=torch.int64, device=device) 
     mask_token = torch.tensor(esm2_alphabet.encode("<mask>"), dtype=torch.int64, device=device)        
     
-    ongoing_s = 0
-    ongoing_f = 0    
+    ongoing_s_dkl = 0
+    ongoing_f_dkl = 0    
+    ongoing_s_mxdl = 0
+    ongoing_f_mxdl = 0 
     
     n_epochs = ceil(iterations / len(train_data_loader))
     total_steps = 0
@@ -454,7 +456,7 @@ def train_esm_model(dataset_path=None,
             total_loss = torch.tensor(0, device=device, dtype=torch.float)
             loss_str = []
             
-            if loss_to_use["dkl"]:
+            if loss_to_use["dkl"] or loss_to_use["max_diff"]:
                 pssm = masked_logits[1:-1,:].softmax(dim=1).view((len_ref_seq, -1))
                         
                 
@@ -481,20 +483,47 @@ def train_esm_model(dataset_path=None,
                                               to_mutation[:,mutated_positions.view((-1))],
                                               device=device)
                     
-                dkl = -dkl_loss(predicted_fitness,labels.to(torch.float32))
+                actives = predicted_fitness[labels == 1]
+                inactives = predicted_fitness[labels == 0]
+                    
                 
                 
-                if predicted_fitness[labels == 1].mean().cpu().item() > predicted_fitness[labels == 0].mean().cpu().item():
-                    ongoing_s += 1
-                else: 
-                    ongoing_f += 1
+                if loss_to_use["max_diff"]:
+                    mxdl = -(actives.max() - inactives.max())
+                    
+                    
+                    if actives.max().cpu().item() > inactives.max().cpu().item():
+                        ongoing_s_mxdl += 1
+                    else: 
+                        ongoing_f_mxdl += 1
+                    
+                    print("\t[MAX stats -> S%d:F%d] - %.3f : %.3f" %\
+                          (ongoing_s_mxdl, 
+                           ongoing_f_mxdl, 
+                           actives.max().cpu().item(),
+                           inactives.max().cpu().item()))
+                    
+                    loss_str.append("MAXDL: %.3f" % mxdl.item())
+                    total_loss += torch.tensor(loss_weights["max_diff"], device=device) * mxdl
                 
-                print("[S%d:F%d] - %.3f : %.3f" % (ongoing_s, ongoing_f, predicted_fitness[labels == 1].mean().cpu().item(),
-                                        predicted_fitness[labels == 0].mean().cpu().item()))
-                
-                loss_str.append("DKL: %.3f" % dkl.item())
-                total_loss += torch.tensor(loss_weights["dkl"], device=device) * dkl
-                
+                if loss_to_use["dkl"]:
+                    dkl = -dkl_loss(predicted_fitness,labels.to(torch.float32))
+                    
+                    if actives.mean().cpu().item() > inactives.mean().cpu().item():
+                        ongoing_s_dkl += 1
+                    else: 
+                        ongoing_f_dkl += 1
+                    
+                    print("\t[DKL stats -> S%d:F%d] - %.3f : %.3f" %\
+                          (ongoing_s_dkl, 
+                           ongoing_f_dkl, 
+                           actives.mean().cpu().item(),
+                           inactives.mean().cpu().item()))
+                    
+                    
+                    loss_str.append("DKL: %.3f" % dkl.item())
+                    total_loss += torch.tensor(loss_weights["dkl"], device=device) * dkl
+                    
                 
             if loss_to_use["nll"] or loss_to_use["orpo"] or loss_to_use["dpo"]:                
                 masked_logits_repeat = masked_logits[padded_mutated_positions.view((-1)),:].repeat(B,1,1)
@@ -638,7 +667,8 @@ def evaluate(dataset_path=None,
                     verbose=True):       
     
 
-    dataset = validate_args(dataset_path=dataset_path,
+    model, esm2_alphabet, project_name, loss_to_use, weights_path, dataset =\
+              validate_args(dataset_path=dataset_path,
                             save_path=save_path,
                             device=device,
                             model_name=model_name,
@@ -660,11 +690,28 @@ def evaluate(dataset_path=None,
                             activity_column_name=activity_column_name,
                             sequence_column_name=activity_column_name,
                             verbose=verbose)
+              
+    eval_path = "%s/%s" % (save_path, project_name)
+    weights_path = "%s/weights" % (eval_path)   
+    #params = torch.load("%s/best_sep_%s.pt" % (weights_path, project_name))
+    params = torch.load("%s/final_checkpoint_%s.pt" % (weights_path, project_name))
+    #"
+    model.load_state_dict(params["model_params "])
+    
+    #     model.load_state_dict(params["model_params "])
+        
+        
+    #     optimizer = torch.optim.Adam(model.parameters(), 
+    #                                  lr=learning_rate, 
+    #                                  weight_decay=weight_decay)
+    #     optimizer.load_state_dict(params["optimizer_params"])
+        
+    #     iterations -= params["checkpoint"]
     
     dataset.evaluate_across_masks(device=device)   
 
 
-
+    
 def main():
     parser = argparse.ArgumentParser(description="A simple tool for re-training PLMs for protein function prediction.")
     
@@ -681,12 +728,12 @@ def main():
     
         
     with open(yaml_path, "r") as file:
-        data = yaml.safe_load(file)
+        yaml_args = yaml.safe_load(file)
        
         
-    fc = data.pop("first_mutation_column_name")
-    lc = data.pop("last_mutation_column_name")
-    sc = data["sequence_column_name"]
+    fc = yaml_args.pop("first_mutation_column_name")
+    lc = yaml_args.pop("last_mutation_column_name")
+    sc = yaml_args["sequence_column_name"]
     
     def full_mask_pos_func(sdf):
         return get_mutated_position_full_mask_by_first_last_colname(sdf, 
@@ -700,15 +747,15 @@ def main():
                                                                        last_col=lc,
                                                                        sequence_col=sc)
     
-    data["full_mask_pos_func"] = full_mask_pos_func
-    data["partial_mask_pos_func"] = partial_mask_pos_func
+    yaml_args["full_mask_pos_func"] = full_mask_pos_func
+    yaml_args["partial_mask_pos_func"] = partial_mask_pos_func
     
     
     
-    if type(data["learning_rate"]) != float:
-        data["learning_rate"] = float(data["learning_rate"])
+    if type(yaml_args["learning_rate"]) != float:
+        yaml_args["learning_rate"] = float(yaml_args["learning_rate"])
     
-    train_esm_model(**data)
+    evaluate(**yaml_args)
     
     
 if __name__ == "__main__":

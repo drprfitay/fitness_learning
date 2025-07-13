@@ -1,0 +1,586 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun 24 13:26:20 2025
+
+@author: itayta
+"""
+
+
+import sys, os
+import torch
+import torch.nn.functional as F
+import loralib as lora
+import scipy.stats
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+import einops
+import yaml
+import argparse
+
+from esm_smart_dataset import *
+from sequence_space_utils import *
+
+from Bio import pairwise2
+from Bio.Seq import Seq
+from Bio.Align import substitution_matrices
+from Bio import SeqIO
+
+from random import sample
+from math import ceil
+from collections import OrderedDict
+
+
+blosum62 = substitution_matrices.load("BLOSUM62")
+
+ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+RESULTS_PATH = "%s/results" % ROOT_PATH
+ITAYFOLD_PATH = "%s/itayFold/" % ROOT_PATH
+WEIGHTS_PATH = "/%s/weights/" % ITAYFOLD_PATH
+
+MSA_PATH = "%s/data/datasets/msa/" % ROOT_PATH
+
+STOCK_MSAS = ["1a3a_1_A.a3m", 
+              "5ahw_1_A.a3m", 
+              "1xcr_1_A.asm",
+              "gfp2.aln"]
+
+MODEL_WEIGHTS_FILE_NAME = "esm3/esm_model_weights.pth"
+LORA_WEIGHTS_FIlE_NAME =  "esm3/esm_lora_weights.pth"
+ENCODER_WEIGHTS_FILE_NAME = "esm3/structure_encoder.pth"
+DECODER_WEIGHTS_FILE_NAME = "esm3/structure_decoder.pth"
+
+
+ROOT_DMS_PATH = "%s/data/datasets/DMS/Data" % ROOT_PATH
+BASE_DMS_PATH = "%s/data/" % ROOT_DMS_PATH
+BASE_DMS_PDB_PATH = "%s/structure_data/" % ROOT_DMS_PATH 
+
+def fix_esm_path():
+    global original_sys_path
+    
+    # Specify the module name and path
+    module_name = "esm"
+    module_path = ITAYFOLD_PATH 
+    
+    # Store the original sys.path
+    original_sys_path = sys.path.copy()
+
+    # Temporarily add the local directory to sys.path
+    sys.path.insert(0, os.path.abspath(module_path))
+
+    # hack
+    for mdl in [k for k,v in sys.modules.items() if module_name in k]:
+        del sys.modules[mdl]
+
+fix_esm_path()
+
+import esm2
+import string
+
+deletekeys = dict.fromkeys(string.ascii_lowercase)
+deletekeys["."] = None
+deletekeys["*"] = None
+translation = str.maketrans(deletekeys)
+    
+def read_sequence(filename: str) -> tuple[str, str]:
+    """ Reads the first (reference) sequences from a fasta or MSA file."""
+    record = next(SeqIO.parse(filename, "fasta"))
+    return record.description, str(record.seq)
+
+def remove_insertions(sequence: str) -> str:
+    """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
+    return sequence.translate(translation)
+
+def read_msa(filename: str) -> list[tuple[str, str]]:
+    """ Reads the sequences from an MSA file, automatically removes insertions."""
+    return [(record.description, remove_insertions(str(record.seq))) for record in SeqIO.parse(filename, "fasta")]
+
+def load_esm2_model_and_alphabet(model_name):
+    supported_esm2_models =\
+        ["esm1_t34_670M_UR50S",
+         "esm1_t34_670M_UR50D",
+         "esm1_t34_670M_UR100",
+         "esm1_t12_85M_UR50S",
+         "esm1_t6_43M_UR50S",
+         "esm1b_t33_650M_UR50S",
+         "esm_msa1_t12_100M_UR50S",
+         "esm_msa1b_t12_100M_UR50S",        
+         "esm1v_t33_650M_UR90S_1",
+         "esm1v_t33_650M_UR90S_2",
+         "esm1v_t33_650M_UR90S_3",
+         "esm1v_t33_650M_UR90S_4",
+         "esm1v_t33_650M_UR90S_5",
+         "esm_if1_gvp4_t16_142M_UR50",
+         "esm2_t6_8M_UR50D",
+         "esm2_t12_35M_UR50D",
+         "esm2_t30_150M_UR50D",
+         "esm2_t33_650M_UR50D",
+         "esm2_t36_3B_UR50D",
+         "esm2_t48_15B_UR50D"]
+        
+    if model_name not in supported_esm2_models:
+        raise BaseException("Unsupported model %s, model must be in: %s" %\
+                              (model_name, ", ".join(supported_esm2_models)))
+        
+    model_weights_and_data_path = "%s/esm2/%s.pth" % (WEIGHTS_PATH, model_name)
+    
+    if model_weights_and_data_path in os.listdir("%s/esm2" % WEIGHTS_PATH):
+        model_data = torch.load(model_weights_and_data_path)
+    else:    
+        model_data, regression_data = esm2.pretrained._download_model_and_regression_data(model_name)
+        
+        if regression_data is not None:
+            model_data["model"].update(regression_data["model"])
+            
+        # Save model data
+        torch.save(model_data, model_weights_and_data_path)
+        
+    return esm2.pretrained.load_model_and_alphabet_core(model_name, 
+                                                        model_data, 
+                                                        regression_data=None)
+        
+
+def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbose=False):
+        
+    indices = np.repeat(False, sequence_df.shape[0])
+        
+    if type(nmuts) == int:
+        nmuts = [nmuts]
+            
+    for nm in nmuts:
+        indices = indices | (sequence_df[nmuts_column] == nm).to_numpy()
+        if verbose:
+            print("Indices included: %d" % sum(indices))
+            
+    if rev:
+        indices = ~indices
+            
+    return(np.where(indices)[0].tolist())
+
+
+def get_one_hot_encoding(sequence_df, first_col, last_col):
+    si = np.where(sequence_df.columns == first_col)[0][0]
+    ei = np.where(sequence_df.columns == last_col)[0][0]
+    
+    one_hot_encoding = torch.from_numpy(pd.get_dummies(sdf[sdf.columns[si:ei]]).to_numpy()).to(torch.int64)
+
+    
+class EpiNNet(torch.nn.Module):
+    def __init__(self, 
+                 d_in,
+                 d_out,                 
+                 hidden_layers=[1024],
+                 activation="sigmoid",
+                 layer_norm=True,
+                 use_bias=True,
+                 activation_on_last_layer=False,
+                 device=torch.device("cpu"),                 
+                 dtype=torch.double):
+        super().__init__()
+        
+        sequence_list = []
+        
+        activation_dict = {'relu': torch.nn.ReLU(),
+                           'gelu': torch.nn.GELU(),
+                           'sigmoid': torch.nn.Sigmoid()}
+        
+        if activation not in activation_dict.keys():
+            activation = 'sigmoid'
+            
+        activation_func = activation_dict[activation]
+        
+        layers = [d_in] + hidden_layers + [d_out]
+        
+        N_layers = len(layers) - 1
+        for layer_idx in range(0, N_layers):                        
+            l_in = layers[layer_idx]
+            l_out = layers[layer_idx + 1]
+            
+            if layer_norm:
+                sequence_list += [('l%d_norm' % layer_idx, torch.nn.LayerNorm(l_in))]
+            
+            sequence_list += [('l%d_linear' % layer_idx, torch.nn.Linear(l_in, l_out, use_bias))]
+            
+            # last layer
+            if layer_idx != (N_layers - 1) or activation_on_last_layer:            
+                    sequence_list += [('l%d_activation' % layer_idx, activation_func)]
+            
+            
+        self.sequential = torch.nn.Sequential(OrderedDict(sequence_list)).to(device)
+    
+    def forward(self, x):
+        return self.sequential(x)
+            
+
+
+
+class SeqMLP(torch.nn.Module):
+    def __init__(self, 
+                 encoding_type,
+                 encoding_size,
+                 encoding_func,
+                 plm_name=None,                         
+                 hidden_layers=[1024],
+                 activation="sigmoid",
+                 opmode="mean",
+                 layer_norm=True,
+                 use_bias=True,
+                 activation_on_last_layer=False,
+                 tok_dropout=True,
+                 device=torch.device("cpu"),                 
+                 dtype=torch.double):
+        super().__init__()
+                 
+        possible_encodings = ["onehot", "plm_embedding"]
+         
+        if encoding_type not in possible_encodings:
+            raise Exception("Unable to support opmode %s for trunk model, allowed opmodes are: %s" % (opmode, ", ".join(possible_opmodes)))
+        
+        self.encoding_type = encoding_type
+        self.encoding_size = encoding_size
+        
+        
+        if encoding_type == "plm_embedding":
+            plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
+            V, plm_d_model = plm.embed_tokens.weight.size()
+                    
+            self.tokenizer = plm_tokenizer
+            self.encoding_func = encoding_func # Should return just requested positiosn working on
+            
+            def encode(seq):                
+                selected_seq = self.encoding_func(seq)
+                return self.tokenizer.encode("".join(selected_seq))
+            
+            
+            self.embedding = torch.nn.Embedding(V, plm_d_model)
+            
+            def forward(self, x):                
+                return self.epinnet_trunk(emb)
+            
+            d_in = plm_d_model * self.encoding_size  # should be num of working positions * d_model
+           
+        elif encoding_type == "onehot":
+            self.encoding_func = encoding_func # Should return one hot encoding
+            
+            def encode(self, seq):
+                return self.encoding_fun(seq)
+            
+            
+            def forward(x):                
+                return self.epinnet_trunk(emb)
+            
+            d_in = self.encoding_size # Should be overall dimension of onehot
+            
+        self.encode_int = encode
+        self.epinnet_trunk = EpiNNet(d_in=d_in,
+                                     d_out=1,                 
+                                     hidden_layers=hidden_layers,
+                                     activation=activation,
+                                     layer_norm=layer_norm,
+                                     use_bias=use_bias,
+                                     activation_on_last_layer=activation_on_last_layer,
+                                     device=device,                 
+                                     dtype=dtype).to(device)
+
+    def encode(self, *args):
+        return self.encode_int(*args)
+        
+
+
+def select_design_pos(seq):
+    return([seq[21], seq[23], seq[24]])
+
+epinnet = SeqMLP("plm_embedding", 3, select_design_pos, plm_name="esm2_t12_35M_UR50D")
+
+epinnet.encode("MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN")
+
+         
+# POSITION IS IN PDB (1-based idx!!!!!!)
+class plmTrunkModel(torch.nn.Module):    
+    def __init__(self, 
+                 plm_name,
+                 hidden_layers=[1024],
+                 activation="sigmoid",
+                 opmode="mean",
+                 layer_norm=True,
+                 use_bias=True,
+                 activation_on_last_layer=False,
+                 tok_dropout=True,
+                 specific_pos=None,
+                 kernel_size=20,
+                 stride=5,
+                 device=torch.device("cpu"),                 
+                 dtype=torch.double):
+        super().__init__()
+                
+        plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
+        V, plm_d_model = plm.embed_tokens.weight.size()
+                
+        self.tokenizer = plm_tokenizer
+        
+        if (type(plm) == esm2.model.esm2.ESM2):
+            self.last_layer = plm.num_layers
+            def plm_forward_presentation(x):
+                forward = plm.forward(x, repr_layers=[self.last_layer])
+                hh = forward["representations"][self.last_layer]
+                return(hh)
+            
+        self.forward_func = plm_forward_presentation                
+        self.opmode = opmode
+        
+        possible_opmodes = ["mean", "class", "avgpool", "pos"]
+        
+        if opmode not in possible_opmodes:
+            raise Exception("Unable to support opmode %s for trunk model, allowed opmodes are: %s" % (opmode, ", ".join(possible_opmodes)))
+                        
+        if opmode == "mean":            
+            if specific_pos is not None:
+                # Average across specific positions
+                self.specific_pos = torch.tensor(specific_pos, dtype=torch.int64) - 1 # PDB INDEX!!!!!! (1-based)
+                
+                def emb_pool_func(hh):                
+                    return(hh[:,self.specific_pos,:].mean(dim=1))
+            else:
+                def emb_pool_func(hh):                
+                    return(hh.mean(dim=1))
+            
+        elif opmode == "class":
+            class_token = torch.tensor(self.tokenizer.encode("<unk>"), dtype=torch.int64)
+            
+            def emb_pool_func(hh):
+                return(hh[:,0,:])
+            
+        elif opmode == "avgpool":
+            self.conv1d = torch.nn.AvgPool1d(kernel_size=kernel_size,stride=stride)
+                
+            def emb_pool_func(hh):
+                return(self.conv1d(einops.rearrange(hh,"B S D->B D S")).mean(dim=2))   
+        
+        elif opmode == "pos":
+            self.specific_pos = torch.tensor(specific_pos, dtype=torch.int64) - 1 # PDB INDEX!!!!!! (1-based)
+            
+            def emb_pool_func(hh):
+                return(hh[:,self.specific_pos,:].flatten(1,2))
+            
+            
+        trunk_d_in_factor = 1 if opmode != "pos" else len(self.specific_pos)
+            
+            
+        self.emb_func = emb_pool_func
+        self.plm = plm.to(device)
+        self.epinnet_trunk = EpiNNet(d_in=plm_d_model * trunk_d_in_factor,
+                                     d_out=1,                 
+                                     hidden_layers=hidden_layers,
+                                     activation=activation,
+                                     layer_norm=layer_norm,
+                                     use_bias=use_bias,
+                                     activation_on_last_layer=activation_on_last_layer,
+                                     device=device,                 
+                                     dtype=dtype).to(device)
+        
+    def encode(self, seq):            
+        enc_seq = ""
+        if self.opmode == "class":
+            enc_seq = "<unk>"
+                
+        enc_seq = enc_seq + "<cls>" + seq + "<eos>"
+                
+        return self.tokenizer.encode(enc_seq)
+            
+
+    def forward(self, x):                
+        hh = self.forward_func(x)
+        emb = self.emb_func(hh)
+            
+        return self.epinnet_trunk(emb)
+    
+
+class EpiNNetDataset(Dataset):
+    def __init__(self,
+                 dataset_path,
+                 indices,
+                 encoding_function,
+                 encoding_identifier,
+                 cache=True,
+                 sequence_column_name='full_seq',                 
+                 activity_column_name='inactive',   
+                 labels_dtype=torch.float64):
+            
+            
+        if not dataset_path.endswith(".csv"):
+            raise BaseException("Dataset must be a .csv file received (%s)" % dataset_path)
+
+        
+        self.dataset_path = dataset_path    
+        self.sequence_dataframe = pd.read_csv(dataset_path)            
+        self.size = self.sequence_dataframe.shape[0] # ToDo: read from dataset        
+            
+        self.sequence_column_name=sequence_column_name
+        self.activity_column_name=activity_column_name
+        
+        self.labels = torch.tensor(self.sequence_dataframe[self.activity_column_name], dtype=labels_dtype)
+                    
+        self.encoding_function = encoding_function
+        self.cache_path = "%s_mlp_cache/" % dataset_path.split(".csv")[0]       
+        self.cache = cache
+        
+        os.makedirs(self.cache_path, exist_ok=True)
+        os.makedirs("%s/misc" % self.cache_path, exist_ok=True)   
+        
+        tokenized_sequences_filename = "%s_encoded_sequences.pt"  % encoding_identifier
+        cached_files = os.listdir("%s/misc" % self.cache_path)
+        
+        
+        if self.cache and tokenized_sequences_filename in cached_files:
+            self.encoded_tensor = torch.load("%s/misc/%s" % (self.cache_path, tokenized_sequences_filename))
+        else:
+            print("Tokenizing sequences in a non-DMS dataset, this may take a while")                              
+            encoded_sequences = [torch.tensor(self.encoding_function(seq)) for seq in self.sequence_dataframe[self.sequence_column_name].to_list()]
+            self.encoded_tensor = torch.stack(encoded_sequences, dim=0)
+            
+        if self.cache:        
+            print("Caching \n\t(1) %s" % (tokenized_sequences_filename))
+            torch.save(self.encoded_tensor, "%s/misc/%s" % \
+                       (self.cache_path, tokenized_sequences_filename))
+        
+        # subset based on indices
+        if indices is not None:                
+            # Monkey patch!!!!!!
+            if type(indices) == tuple:
+                indices = indices[0]
+                        
+            #subset based on indices                            
+            if callable(indices):
+                indices = indices(self.sequence_dataframe)
+                        
+            if type(indices) == list:
+                self.indices = indices                    
+            else:
+                self.indices = None                    
+                
+        if indices is None:
+            self.indices = [i for i in range(0, self.sequence_dataframe.shape[0])]
+        
+        indices_tensor = torch.tensor(self.indices)        
+
+
+        self.encoded_tensor = self.encoded_tensor[indices_tensor,:]            
+        self.labels = self.labels[indices_tensor]
+        
+        self.size = indices_tensor.shape[0]
+
+        def __getitem__(self,idx):
+            return self.encoded_tensor[idx], self.labels[idx]
+                
+        def __len__(self):
+            return self.size
+
+
+class EpiNNetActivityTrainTest(Dataset):
+        def __init__(self,
+                     train_project_name,
+                     evaluation_path,
+                     dataset_path,
+                     train_indices,
+                     test_indices,
+                     encoding_function,
+                     encoding_identifier,       
+                     cache=True,
+                     lazy_load=True,
+                     sequence_column_name='full_seq',
+                     activity_column_name='inactive',
+                     ref_seq="",
+                     mini_batch_size=20,
+                     positive_label=0,
+                     negative_label=1,
+                     device=torch.device("cpu"),
+                     labels_dtype=torch.float64):
+            
+            self.train_indices=train_indices,
+            self.test_indices=test_indices,
+            self.train_project_name=train_project_name
+            self.evaluation_path=evaluation_path
+            self.dataset_path=dataset_path         
+            
+            self.encoding_function = encoding_function
+            self.encoding_identifier = encoding_identifier
+            self.cache=cache
+            self.lazy_load=lazy_load,
+            self.sequence_column_name=sequence_column_name
+            self.activity_column_name=activity_column_name
+            self.ref_seq=ref_seq
+            self.positive_label=positive_label
+            self.negative_label=negative_label
+            self.labels_dtype=labels_dtype
+            self.device = device
+        
+            if type(self.train_indices) == tuple:
+                self.train_indices = self.train_indices[0]
+    
+            if type(self.test_indices) == tuple:
+                self.test_indices = self.test_indices[0]
+
+            if type(dataset_path) == tuple and len(dataset_path) == 2:
+                self.train_dataset_path = dataset_path[0]
+                self.test_dataset_path = dataset_path[1]
+                
+            self.train_dataset_path = self.dataset_path
+            self.test_dataset_path = self.dataset_path        
+            
+            self.train_dataset =\
+                    EpiNNetDataset(self.train_dataset_path,
+                                   self.train_indices,
+                                   self.encoding_function,
+                                   self.encoding_identifier,
+                                   self.cache,
+                                   self.sequence_column_name,
+                                   self.activity_column_name,
+                                   self.labels_dtype)
+                    
+            self.size = len(train_dataset)
+            
+        def lazy_load_func(self):
+                self.test_dataset =\
+                    EpiNNetDataset(self.test_dataset_path,
+                                   self.test_indices,
+                                   self.encoding_function,
+                                   self.encoding_identifier,
+                                   self.cache,
+                                   self.sequence_column_name,
+                                   self.activity_column_name,
+                                   self.labels_dtype)
+                    
+        def __getitem__(self,idx):
+            return self.encoded_tensor[idx], self.labels[idx]
+                
+        def __len__(self):
+            return self.size           
+
+
+train_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts")
+test_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts", rev=True)
+
+pt = plmTrunkModel("esm2_t12_35M_UR50D", opmode="mean", specific_pos=[22,24,25])
+dataset = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
+ref_seq = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
+
+
+EpiNNetActivityTrainTest(train_project_name="",
+                         evaluation_path="",
+                         dataset_path=dataset,
+                         train_indices=train_indices_func,
+                         test_indices=test_indices_func,
+                         encoding_function=pt.encode,
+                         encoding_identifier="esm2_t12_35M_UR50D",       
+                         cache=True,
+                         lazy_load=True,
+                         sequence_column_name='full_seq',
+                         activity_column_name='inactive',
+                         ref_seq=ref_seq)
+
+
+
+    
+a = 5
+                            

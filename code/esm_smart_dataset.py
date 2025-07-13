@@ -1100,7 +1100,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
             
             results_pulled_from_cache = False                         
             
-            initail_batch_idx = 0
+            initial_batch_idx = 0
             
             if cache and\
                not override and\
@@ -1127,11 +1127,13 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 print("Cached evaluation results found, starting from batch %d (mask: %d)" % (initial_batch_idx, initial_mask_idx))
                 results_pulled_from_cache = True
                 
-            # In case we didn't want to override but truly didnt find results
+            # In case we didn't want to override but truly didnt find results            
+            self.evaluate_full(train=False, device=device, plot=True)
+            
             if not results_pulled_from_cache:
                 
-                train_fitness_full = self.evaluate_full(train=True, device=device)
-                test_fitness_full = self.evaluate_full(train=False, device=device)
+                train_fitness_full = self.evaluate_full(train=True, device=device, plot=True)
+                test_fitness_full = self.evaluate_full(train=False, device=device, plot=True)
                         
                 train_results = torch.ones((len(train_dataset.indices), 5), dtype=torch.float32, device=device) * -1
                 test_results = torch.ones((len(test_dataset.indices), 5), dtype=torch.float32, device=device) * -1
