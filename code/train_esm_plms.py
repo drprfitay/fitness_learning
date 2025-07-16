@@ -364,7 +364,7 @@ def train_esm_model(dataset_path=None,
                             partial_mask_pos_func=partial_mask_pos_func,
                             num_muts_column_name=num_muts_column_name,
                             activity_column_name=activity_column_name,
-                            sequence_column_name=activity_column_name,
+                            sequence_column_name=sequence_column_name,
                             verbose=verbose)
     
     len_ref_seq = len(ref_seq)

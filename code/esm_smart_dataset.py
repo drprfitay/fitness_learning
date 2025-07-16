@@ -791,6 +791,23 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 
             self.train_dataset_path = self.dataset_path
             self.test_dataset_path = self.dataset_path
+            
+            self.train_dataset_partial_mask = \
+                    Esm2SequenceActivityContrastiveDatasetAdvancedMask(\
+                                                           self.train_dataset_path,
+                                                           self.train_indices,
+                                                           esm_alphabet,
+                                                           partial_mask_mut_positions,
+                                                           cache,
+                                                           model_name,
+                                                           sequence_column_name,
+                                                           activity_column_name,
+                                                           ref_seq,
+                                                           positive_label,
+                                                           negative_label,
+                                                           e_i,
+                                                           s_i,
+                                                           labels_dtype)
         
             self.train_dataset_full_mask = \
                 Esm2SequenceActivityContrastiveDataset(self.train_dataset_path,
@@ -808,22 +825,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                                                        s_i,
                                                        labels_dtype)
     
-            self.train_dataset_partial_mask = \
-                    Esm2SequenceActivityContrastiveDatasetAdvancedMask(\
-                                                           self.train_dataset_path,
-                                                           self.train_indices,
-                                                           esm_alphabet,
-                                                           partial_mask_mut_positions,
-                                                           cache,
-                                                           model_name,
-                                                           sequence_column_name,
-                                                           activity_column_name,
-                                                           ref_seq,
-                                                           positive_label,
-                                                           negative_label,
-                                                           e_i,
-                                                           s_i,
-                                                           labels_dtype)
+
                     
 
                 

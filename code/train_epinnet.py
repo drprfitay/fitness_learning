@@ -141,6 +141,28 @@ def load_esm2_model_and_alphabet(model_name):
                                                         regression_data=None)
         
 
+def pairwise_cosine(X):
+    X = F.normalize(X, dim=-1)
+    similarity = torch.matmul(X, X.t())     # [N, N]
+    distance = 1 - similarity
+    return distance
+
+def online_mine_triplets(labels):
+    
+    triplets = []
+    
+    for i, anchor_label in enumerate(labels):        
+        positive_indices = (labels == anchor_label).nonzero(as_tuple=True)[0]
+        negative_indices = (labels != anchor_label).nonzero(as_tuple=True)[0]
+
+        for pos_idx in positive_indices:
+            if pos_idx == i: continue
+            for neg_idx in negative_indices:
+                triplets.append((i, pos_idx.item(), neg_idx.item()))
+                
+    return triplets
+
+
 def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbose=False):
         
     indices = np.repeat(False, sequence_df.shape[0])
@@ -393,7 +415,7 @@ class plmTrunkModel(torch.nn.Module):
         hh = self.forward_func(x)
         emb = self.emb_func(hh)
             
-        return self.epinnet_trunk(emb)
+        return emb, hh, self.epinnet_trunk(emb)
     
 
 class EpiNNetDataset(Dataset):
@@ -462,19 +484,20 @@ class EpiNNetDataset(Dataset):
         if indices is None:
             self.indices = [i for i in range(0, self.sequence_dataframe.shape[0])]
         
-        indices_tensor = torch.tensor(self.indices)        
-
+        indices_tensor = torch.tensor(self.indices)#torch.tensor(sample(self.indices, 100)) ##       #
+        # indices_tensor = sample(indices_tensor[self.labels[indices_tensor] == 0].tolist(), torch.unique(self.labels[indices_tensor], return_counts=True)[1][1].int()
+        # ) + indices_tensor[self.labels[indices_tensor] == 1].tolist()
 
         self.encoded_tensor = self.encoded_tensor[indices_tensor,:]            
         self.labels = self.labels[indices_tensor]
         
-        self.size = indices_tensor.shape[0]
+        self.size = self.labels.shape[0]
 
-        def __getitem__(self,idx):
-            return self.encoded_tensor[idx], self.labels[idx]
+    def __getitem__(self,idx):
+        return self.encoded_tensor[idx], self.labels[idx]
                 
-        def __len__(self):
-            return self.size
+    def __len__(self):
+        return self.size
 
 
 class EpiNNetActivityTrainTest(Dataset):
@@ -538,7 +561,7 @@ class EpiNNetActivityTrainTest(Dataset):
                                    self.activity_column_name,
                                    self.labels_dtype)
                     
-            self.size = len(train_dataset)
+            self.size = len(self.train_dataset)
             
         def lazy_load_func(self):
                 self.test_dataset =\
@@ -552,34 +575,150 @@ class EpiNNetActivityTrainTest(Dataset):
                                    self.labels_dtype)
                     
         def __getitem__(self,idx):
-            return self.encoded_tensor[idx], self.labels[idx]
+            return self.train_dataset[idx]
                 
         def __len__(self):
             return self.size           
 
 
+
+device = torch.device("mps")
 train_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts")
 test_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts", rev=True)
 
-pt = plmTrunkModel("esm2_t12_35M_UR50D", opmode="mean", specific_pos=[22,24,25])
+# model = plmTrunkModel("esm2_t12_35M_UR50D", 
+#                       opmode="pos",
+#                       specific_pos=[1],
+#                       activation="gelu").to(device)
+
+model = plmTrunkModel("esm2_t12_35M_UR50D", 
+                      opmode="mean",
+                      #specific_pos=pos_to_use,
+                      activation="sigmoid",
+                      layer_norm=False,
+                      activation_on_last_layer=False).to(device)
+
 dataset = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
 ref_seq = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
 
 
-EpiNNetActivityTrainTest(train_project_name="",
-                         evaluation_path="",
-                         dataset_path=dataset,
-                         train_indices=train_indices_func,
-                         test_indices=test_indices_func,
-                         encoding_function=pt.encode,
-                         encoding_identifier="esm2_t12_35M_UR50D",       
-                         cache=True,
-                         lazy_load=True,
-                         sequence_column_name='full_seq',
-                         activity_column_name='inactive',
-                         ref_seq=ref_seq)
+train_test_dataset =\
+     EpiNNetActivityTrainTest(train_project_name="",
+                             evaluation_path="",
+                             dataset_path=dataset,
+                             train_indices=train_indices_func,
+                             test_indices=test_indices_func,
+                             encoding_function=model.encode,
+                             encoding_identifier="esm2_t12_35M_UR50D",       
+                             cache=True,
+                             lazy_load=True,
+                             sequence_column_name='full_seq',
+                             activity_column_name='inactive',
+                             ref_seq=ref_seq,
+                             labels_dtype=torch.float32)
 
 
+
+pos_to_use = [int(x[1:]) for x in train_test_dataset.train_dataset.sequence_dataframe.columns[3:25].tolist()]
+
+
+    
+
+train_data_loader = torch.utils.data.DataLoader(train_test_dataset, 
+                                                batch_size=32, 
+                                                shuffle=True)
+    
+
+iterations = 5000
+n_epochs = ceil(iterations / len(train_data_loader))
+total_steps = 0
+
+
+optimizer = torch.optim.Adam(model.parameters(),  lr=4e-6,  weight_decay=0.1)    
+l1_loss = torch.nn.L1Loss().to(device)
+l2_loss = torch.nn.MSELoss().to(device)
+criterion = torch.nn.BCELoss()
+triplet_loss = torch.nn.TripletMarginLoss(margin=4.0,  eps=1e-7)
+model.train()
+
+avg_loss = torch.tensor([]).to(device)
+
+loss_steps = 0
+for epoch in range(0, n_epochs):
+    running_loss = torch.tensor(0, dtype=torch.float).to(device)
+    
+    for iter_step, batch in enumerate(train_data_loader):
+        x = batch[0].to(device)
+        y = batch[1].to(device)
+        
+        trips = torch.tensor(online_mine_triplets(y))
+        if len(trips) <= 0:
+            continue     
+        
+        x = x[:,torch.tensor(pos_to_use) +1 - 1] # No +1 because <bos> encoding, pos_to_use is pdb indexed!!!
+        
+        optimizer.zero_grad()
+        _, hh, y_pred = model(x)
+        #forward = model.plm(x, repr_layers=[model.plm.num_layers])
+        emb = torch.nn.functional.normalize(hh, dim=1).mean(dim=1)
+        #emb = torch.nn.functional.normalize(forward["representations"][model.plm.num_layers][:,model.specific_pos + 1,:], dim=1).flatten(1,2)
+        
+        
+        emb_trip = emb[trips]
+        trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
+        #l2 = l2_loss(y_pred, y)
+        ce_loss = criterion(y_pred.view(-1), y)
+        total_loss = trip_loss
+        running_loss += total_loss.item()
+        total_loss.backward()        
+        optimizer.step()
+        
+        
+        if (iter_step + 1) % 20 == 0:
+            loss_steps += 1
+            running_loss = running_loss /  20
+            
+            if len(avg_loss) == 0:
+                avg_loss = running_loss.detach().reshape(-1)
+            else:
+                avg_loss = torch.cat([avg_loss, running_loss.detach().reshape(-1)])
+                
+            running_loss = torch.tensor(0, dtype=torch.float).to(device)
+            plt.plot(range(1, loss_steps + 1), avg_loss.cpu().detach().numpy())
+            plt.show()
+            
+        print("[E%d I%d] %.3f { Triplet :%.3f CE/L2 Trunk %.3f }" % (epoch, 
+                                                             iter_step, 
+                                                             total_loss,
+                                                             trip_loss,
+                                                             ce_loss))
+
+        # stds = emb.std(dim=0)
+        # var_loss = torch.mean(F.relu(1 - stds))
+            
+        # l1 = l1_loss(y_pred.view(-1), y)
+        # l2 = l2_loss(y_pred.view(-1), y)
+        
+        # bce_loss = criterion(y_pred.view(-1), y)
+        # total_loss =  bce_loss + 5*  var_loss
+        # total_loss.backward()
+        # # loss_str ="L1: %.3f, L2: %.3f, bce_loss: %.3f, var: %.3f" % (l1.item(), l2.item(), bce_loss.item(), var_loss.item())
+        
+        # # for name, param in model.epinnet_trunk.named_parameters():
+        # #     if param.grad is None:
+        # #         print(param.grad)
+            
+        # print("Loss (%.3f [%s]) [Epoch %d, I %d]" %\
+        #           (total_loss.item(),
+        #            loss_str,#" ".join(loss_str),
+        #            epoch, 
+        #            iter_step))
+        
+        
+        # triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
+                
+        # optimizer.step()
+        
 
     
 a = 5
