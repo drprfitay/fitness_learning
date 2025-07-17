@@ -968,6 +968,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 plot_hists(act, ina)                
             
         def evaluate_full(self,
+                          designed_positions=None,
                           train=True,
                           is_msa_transformer=False,
                           return_results=False,
@@ -1018,7 +1019,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 softmax_dim = 2
                 
             batched_sequences_to_run_with_masks = batched_sequences_to_run_with_masks.view(view_shape)
-            logits = self.esm_model(batched_sequences_to_run_with_masks.to(device))
+            logits = self.esm_model(batched_sequences_to_run_with_masks[:,designed_positions].to(device))
             
             if is_msa_transformer:
                 masked_logits = logits["logits"][:,0,1:-1,:]

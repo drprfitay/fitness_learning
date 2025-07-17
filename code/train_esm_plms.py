@@ -395,7 +395,9 @@ def train_esm_model(dataset_path=None,
     #     iterations -= params["checkpoint"]
     
     loss = torch.nn.CrossEntropyLoss().to(device)
+    
     dkl_loss = torch.nn.KLDivLoss().to(device)
+    
     dataset.train_dataset_partial_mask.one_hot_mut_info =\
         dataset.train_dataset_partial_mask.one_hot_mut_info.to(device)
         
@@ -403,11 +405,17 @@ def train_esm_model(dataset_path=None,
         dataset.train_dataset_full_mask.one_hot_mut_info.to(device)      
         
     separation = torch.tensor(0)
-    
-        
+            
     wt_tokens = torch.tensor(esm2_alphabet.encode("<cls>" + ref_seq + "<eos>"), dtype=torch.int64, device=device).view((1,-1))
     eos_token = torch.tensor(esm2_alphabet.encode("<eos>"), dtype=torch.int64, device=device) 
-    mask_token = torch.tensor(esm2_alphabet.encode("<mask>"), dtype=torch.int64, device=device)        
+    mask_token = torch.tensor(esm2_alphabet.encode("<mask>"), dtype=torch.int64, device=device)            
+    
+    
+    designed_pos = [int(x[1:]) for x in dataset.train_dataset_partial_mask.sequence_dataframe.columns[3:].to_list()]
+    designed_pos = torch.tensor(designed_pos)
+    plm_positions_to_run = torch.tensor(range(0,240))
+    plm_positions_to_run = designed_pos
+    run_designed_only=True
     
     ongoing_s_dkl = 0
     ongoing_f_dkl = 0    
@@ -417,48 +425,50 @@ def train_esm_model(dataset_path=None,
     n_epochs = ceil(iterations / len(train_data_loader))
     total_steps = 0
     
-    for epoch in range(0, n_epochs):
-        for iter_step, batch in enumerate(train_data_loader):
-            
-            total_steps += 1
-            # training loop
-            model.train()                    
-            
-            if mask_type == "both":       
-                positives = batch[0][0].to(device)
-                negatives = batch[0][1].to(device)
-                one_hot_positions = batch[0][2].view((1,1,-1)).to(device)
-                pair_indices = batch[0][3]
-                is_full = batch[1][0] == "full"
-            else:                                
-                positives = batch[0].to(device)
-                negatives = batch[1].to(device)
-                one_hot_positions = batch[2].view((1,1,-1)).to(device)
-                pair_indices = batch[3]
-                is_full = mask_type == "full"
-            
-            _, B, S = positives.size()
-            
-            pad=torch.tensor(0, device=device).view((1,1,1))
-            padded_masked_tensor = torch.cat([pad, one_hot_positions, pad], dim=2)
-            padded_mutated_positions = (padded_masked_tensor == 1)
-            
-    
-            batched_sequences_to_run_with_masks = ((torch.ones(padded_masked_tensor.shape, dtype=torch.int64, device=device) - padded_masked_tensor) * positives[0,0,:])
-            batched_sequences_to_run_with_masks += padded_masked_tensor * mask_token # add masks                
-            
-            
-            optimizer.zero_grad()            
-            logits = model(batched_sequences_to_run_with_masks.view((1,-1)))
-            masked_logits = logits["logits"][0,:,:]
-                    
-            
-            total_loss = torch.tensor(0, device=device, dtype=torch.float)
-            loss_str = []
-            
-            if loss_to_use["dkl"] or loss_to_use["max_diff"]:
-                pssm = masked_logits[1:-1,:].softmax(dim=1).view((len_ref_seq, -1))
+    if run_designed_only:
+        for epoch in range(0, n_epochs):
+            for iter_step, batch in enumerate(train_data_loader):
+                
+                total_steps += 1
+                # training loop
+                model.train()                    
+                
+                if mask_type == "both":       
+                    positives = batch[0][0].to(device)
+                    negatives = batch[0][1].to(device)
+                    one_hot_positions = batch[0][2].view((1,1,-1)).to(device)
+                    pair_indices = batch[0][3]
+                    is_full = batch[1][0] == "full"
+                else:                                
+                    positives = batch[0].to(device)
+                    negatives = batch[1].to(device)
+                    one_hot_positions = batch[2].view((1,1,-1)).to(device)
+                    pair_indices = batch[3]
+                    is_full = mask_type == "full"
+                
+                _, B, S = positives.size()
+                
+                pad=torch.tensor(0, device=device).view((1,1,1))
+                padded_masked_tensor = torch.cat([pad, one_hot_positions, pad], dim=2)
+                padded_mutated_positions = (padded_masked_tensor == 1)
+                
+        
+                batched_sequences_to_run_with_masks = ((torch.ones(padded_masked_tensor.shape, dtype=torch.int64, device=device) - padded_masked_tensor) * positives[0,0,:])
+                batched_sequences_to_run_with_masks += padded_masked_tensor * mask_token # add masks                
+                
+                
+                optimizer.zero_grad()            
+                logits = model(batched_sequences_to_run_with_masks.view((1,-1))[:,plm_positions_to_run])
+                masked_logits = logits["logits"][0,:,:]
                         
+                
+                total_loss = torch.tensor(0, device=device, dtype=torch.float)
+                loss_str = []
+                
+                pssm = masked_logits.softmax(dim=1).view((len(plm_positions_to_run), -1))
+                
+                sns.heatmap(pssm.cpu().detach().numpy())
+                plt.show()
                 
                 pos_indices = torch.unique(pair_indices[:,:,0].view(-1))
                 neg_indices = torch.unique(pair_indices[:,:,1].view(-1))
@@ -466,182 +476,322 @@ def train_esm_model(dataset_path=None,
                 pos_labels = torch.tensor(1, device=device).repeat(pos_indices.shape[0])
                 neg_labels = torch.tensor(0, device=device).repeat(neg_indices.shape[0])
                 labels = torch.cat([pos_labels, neg_labels])
-                
+                    
                 if is_full:
                     relevant_one_hot  = dataset.train_dataset_full_mask.one_hot_mut_info
                 else:
                     relevant_one_hot  = dataset.train_dataset_partial_mask.one_hot_mut_info
-                    
-                mutated_positions = one_hot_positions == 1
+                        
+                                        
+                mutated_positions = (one_hot_positions == 1)[:,:,plm_positions_to_run - 1]
+                        
+                from_mutation = relevant_one_hot[0][indices,:][:,plm_positions_to_run - 1]
+                to_mutation = relevant_one_hot[1][indices,:][:,plm_positions_to_run - 1]
+                 
                 
-                from_mutation = relevant_one_hot[0][indices,:]
-                to_mutation = relevant_one_hot[1][indices,:]
-            
                 predicted_fitness =\
-                    fitness_from_prob_non_dms(pssm[mutated_positions.view(-1)],#pssm[mutated_positions],
-                                              from_mutation[:,mutated_positions.view((-1))][0],
-                                              to_mutation[:,mutated_positions.view((-1))],
-                                              device=device)
-                    
+                    fitness_from_prob_non_dms(pssm[mutated_positions.view(-1)].clone().detach(),#pssm[mutated_positions],
+                                                  from_mutation[:,mutated_positions.view((-1))][0].clone().detach(),
+                                                  to_mutation[:,mutated_positions.view((-1))].clone().detach(),
+                                                  device=device)
+                        
                 actives = predicted_fitness[labels == 1]
                 inactives = predicted_fitness[labels == 0]
-                    
-                
-                
-                if loss_to_use["max_diff"]:
-                    mxdl = -(actives.max() - inactives.max())
-                    
-                    
-                    if actives.max().cpu().item() > inactives.max().cpu().item():
-                        ongoing_s_mxdl += 1
-                    else: 
-                        ongoing_f_mxdl += 1
-                    
-                    print("\t[MAX stats -> S%d:F%d] - %.3f : %.3f" %\
-                          (ongoing_s_mxdl, 
-                           ongoing_f_mxdl, 
-                           actives.max().cpu().item(),
-                           inactives.max().cpu().item()))
-                    
-                    loss_str.append("MAXDL: %.3f" % mxdl.item())
-                    total_loss += torch.tensor(loss_weights["max_diff"], device=device) * mxdl
-                
-                if loss_to_use["dkl"]:
-                    dkl = -dkl_loss(predicted_fitness,labels.to(torch.float32))
-                    
-                    if actives.mean().cpu().item() > inactives.mean().cpu().item():
-                        ongoing_s_dkl += 1
-                    else: 
-                        ongoing_f_dkl += 1
-                    
-                    print("\t[DKL stats -> S%d:F%d] - %.3f : %.3f" %\
-                          (ongoing_s_dkl, 
-                           ongoing_f_dkl, 
-                           actives.mean().cpu().item(),
-                           inactives.mean().cpu().item()))
-                    
-                    
-                    loss_str.append("DKL: %.3f" % dkl.item())
-                    total_loss += torch.tensor(loss_weights["dkl"], device=device) * dkl
-                    
-                
-            if loss_to_use["nll"] or loss_to_use["orpo"] or loss_to_use["dpo"]:                
-                masked_logits_repeat = masked_logits[padded_mutated_positions.view((-1)),:].repeat(B,1,1)
-                masked_logits_repeat = einops.rearrange(masked_logits_repeat, 'B S C -> B C S')
-                positive_generations = positives[:,:,padded_mutated_positions.view(-1)].squeeze(dim=0)
-                
-            
-            if loss_to_use["nll"]:
-                
-                nll_loss = loss(masked_logits_repeat, positive_generations)            
-                loss_str.append("NLL: %.3f" % nll_loss.item())
-                total_loss += torch.tensor(loss_weights["nll"], device=device) * nll_loss
-                
-            if loss_to_use["orpo"] or loss_to_use["dpo"]:
-                negative_generations = negatives[:,:,padded_mutated_positions.view(-1)].squeeze(dim=0)            
-                probs =  masked_logits_repeat.softmax(dim=1)
-                
-                
-                #if loss_to_use["orpo"]:
-                # log_probs = probs.log()
-    
-                # preferred_log_probs = torch.gather(log_probs,
-                #                                    1, 
-                #                                    positive_generations.unsqueeze(dim=1))
-            
-                # unpreferred_log_probs = torch.gather(log_probs,
-                #                                      1, 
-                #                                      negative_generations.unsqueeze(dim=1))
-                
-                # preferred_ref_log_probs = torch.gather(ref_log_probs,
-                #                                        1, 
-                #                                        positive_generations.unsqueeze(dim=1))
-                
-                # unpreferred_ref_log_probs = torch.gather(ref_log_probs,
-                #                                          1, 
-                #                                          negative_generations.unsqueeze(dim=1))
-                
-            
-                # log_diff = dpo_beta * (preferred_log_probs - preferred_ref_log_probs) -\
-                #            dpo_beta * (unpreferred_log_probs - unpreferred_ref_log_probs)
-                           
-                           
-                #log_diff = dpo_beta * (preferred_log_probs - unpreferred_log_probs)# -\
-                           #dpo_beta * (unpreferred_log_probs - unpreferred_ref_log_probs)                       
-                
-                #dpo_loss = -F.logsigmoid(log_diff).mean()
-                # dpo_loss = -F.logsigmoid(preferred_log_probs - unpreferred_log_probs).mean()
-                
-                if loss_to_use["orpo"]:                
-                    preferred_probs = torch.gather(probs,
-                                                   1, 
-                                                   positive_generations.unsqueeze(dim=1))
-                
-                    unpreferred_probs = torch.gather(probs,
-                                                     1, 
-                                                     negative_generations.unsqueeze(dim=1))
-    
-                    odds_preferred = (preferred_probs.mean(dim=2)) / (1 - preferred_probs.mean(dim=2))
-                    odds_unpreferred = (unpreferred_probs.mean(dim=2)) / (1 - unpreferred_probs.mean(dim=2))
-                    orpo_loss = -F.logsigmoid((odds_preferred/odds_unpreferred).log()).mean()
-                    
-                    loss_str.append("ORPO: %.3f" % orpo_loss.item())
-                    total_loss += torch.tensor(loss_weights["orpo"], device=device) * orpo_loss            
-
-            total_loss.backward()
-            print("Loss (%.3f [%s]) [Epoch %d, I %d]" %\
-                  (total_loss.item(),
-                   " ".join(loss_str),
-                   epoch, 
-                   iter_step))
-                
-            optimizer.step()
-            
-            if best_sep_checkpoint is not None:
-                if total_steps % best_sep_checkpoint == 0:
-                    evaluation_metric =\
-                        dataset.evaluate_full(is_msa_transformer=False, 
-                                              return_act_inact=True,
-                                              device=device,
-                                              train=False,
-                                              plot=False)
-                    new_separation = np.median(evaluation_metric[0]) - np.median(evaluation_metric[1])
-                    
-                    if new_separation > separation:
-                        print("Saving new model (improved from %.3f to %.3f" % (separation, new_separation))
-                        separation = new_separation
                         
-                        model_params = model.state_dict()
-                        optimizer_params = optimizer.state_dict()
-                        saved_dict = {"model_params ":model_params,
-                                      "optimizer_params":optimizer_params}
+                
+                print("Mx[A]%.3f, Mx[I]%.3f, Mu[A]%.3f, Mu[I]%.3f" %
+                      (actives.max().item(),
+                      inactives.max().item(),
+                      actives.mean().item(),
+                      inactives.mean().item()))
+                
+                if loss_to_use["nll"] or loss_to_use["orpo"] or loss_to_use["dpo"]:                       
+                    masked_logits_repeat = masked_logits.repeat(B,1,1)
+                    masked_logits_repeat = einops.rearrange(masked_logits_repeat, 'B S C -> B C S')
+                    positive_generations = positives[:,:,plm_positions_to_run.view(-1)].squeeze(dim=0)
+                    
+                if loss_to_use["nll"]:
+                    
+                    nll_loss = loss(masked_logits_repeat, positive_generations)            
+                    loss_str.append("NLL: %.3f" % nll_loss.item())
+                    total_loss += torch.tensor(loss_weights["nll"], device=device) * nll_loss
+                    
+                if loss_to_use["orpo"] or loss_to_use["dpo"]:
+                    negative_generations = negatives[:,:,plm_positions_to_run.view(-1)].squeeze(dim=0)                                
+                    probs =  masked_logits_repeat.softmax(dim=1)
+                            
+                    
+                    if loss_to_use["orpo"]:                
+                        preferred_probs = torch.gather(probs,
+                                                       1, 
+                                                       positive_generations.unsqueeze(dim=1))
+                    
+                        unpreferred_probs = torch.gather(probs,
+                                                         1, 
+                                                         negative_generations.unsqueeze(dim=1))
                         
-                        torch.save(saved_dict, "%s/best_sep_%s.pt" % (weights_path, project_name))
+                        preferred_probs = preferred_probs[:,:,mutated_positions.view(-1)]
+                        unpreferred_probs = unpreferred_probs[:,:,mutated_positions.view(-1)]
+                        
+                        odds_preferred = (preferred_probs.mean(dim=2)) / (1 - preferred_probs.mean(dim=2))
+                        odds_unpreferred = (unpreferred_probs.mean(dim=2)) / (1 - unpreferred_probs.mean(dim=2))
+                        orpo_loss = -F.logsigmoid((odds_preferred/odds_unpreferred).log()).mean()
+                        
+                        loss_str.append("ORPO: %.3f" % orpo_loss.item())
+                        total_loss += torch.tensor(loss_weights["orpo"], device=device) * orpo_loss            
+    
+                total_loss.backward()
+                print("Loss (%.3f [%s]) [Epoch %d, I %d]" %\
+                      (total_loss.item(),
+                       " ".join(loss_str),
+                       epoch, 
+                       iter_step))
+                    
+                optimizer.step()
+                     
+                            
+                if total_steps % checkpoint_every == 0:
+                    
+                    model_params = model.state_dict()
+                    optimizer_params = optimizer.state_dict()
+                    saved_dict = {"model_params ":model_params,
+                                  "optimizer_params":optimizer_params,
+                                  "checkpoint":total_steps}
+                    
+                    torch.save(saved_dict, "%s/final_checkpoint_%s.pt" % (weights_path, project_name))
         
-                        dataset.evaluate_full(is_msa_transformer=False, 
-                                              return_act_inact=True,
-                                              device=device,
-                                              train=False,
-                                              plot=True,
-                                              save=True)
+        model_params = model.state_dict()
+        optimizer_params = optimizer.state_dict()
+        saved_dict = {"model_params ":model_params,
+                      "optimizer_params":optimizer_params}
+        
+        torch.save(saved_dict, "%s/final_%d_%s.pt" % (weights_path, iterations, project_name))
+    else:
+        for epoch in range(0, n_epochs):
+            for iter_step, batch in enumerate(train_data_loader):
+                
+                total_steps += 1
+                # training loop
+                model.train()                    
+                
+                if mask_type == "both":       
+                    positives = batch[0][0].to(device)
+                    negatives = batch[0][1].to(device)
+                    one_hot_positions = batch[0][2].view((1,1,-1)).to(device)
+                    pair_indices = batch[0][3]
+                    is_full = batch[1][0] == "full"
+                else:                                
+                    positives = batch[0].to(device)
+                    negatives = batch[1].to(device)
+                    one_hot_positions = batch[2].view((1,1,-1)).to(device)
+                    pair_indices = batch[3]
+                    is_full = mask_type == "full"
+                
+                _, B, S = positives.size()
+                
+                pad=torch.tensor(0, device=device).view((1,1,1))
+                padded_masked_tensor = torch.cat([pad, one_hot_positions, pad], dim=2)
+                padded_mutated_positions = (padded_masked_tensor == 1)
+                
+        
+                batched_sequences_to_run_with_masks = ((torch.ones(padded_masked_tensor.shape, dtype=torch.int64, device=device) - padded_masked_tensor) * positives[0,0,:])
+                batched_sequences_to_run_with_masks += padded_masked_tensor * mask_token # add masks                
+                
+                
+                optimizer.zero_grad()            
+                logits = model(batched_sequences_to_run_with_masks.view((1,-1)))
+                masked_logits = logits["logits"][0,:,:]
+                        
+                
+                total_loss = torch.tensor(0, device=device, dtype=torch.float)
+                loss_str = []
+                
+                if loss_to_use["dkl"] or loss_to_use["max_diff"]:
+                    pssm = masked_logits[1:-1,:].softmax(dim=1).view((len_ref_seq, -1))
+                            
+                    
+                    pos_indices = torch.unique(pair_indices[:,:,0].view(-1))
+                    neg_indices = torch.unique(pair_indices[:,:,1].view(-1))
+                    indices = torch.cat([pos_indices,neg_indices]).to(device)
+                    pos_labels = torch.tensor(1, device=device).repeat(pos_indices.shape[0])
+                    neg_labels = torch.tensor(0, device=device).repeat(neg_indices.shape[0])
+                    labels = torch.cat([pos_labels, neg_labels])
+                    
+                    if is_full:
+                        relevant_one_hot  = dataset.train_dataset_full_mask.one_hot_mut_info
+                    else:
+                        relevant_one_hot  = dataset.train_dataset_partial_mask.one_hot_mut_info
+                        
+                    mutated_positions = one_hot_positions == 1
+                    
+                    from_mutation = relevant_one_hot[0][indices,:]
+                    to_mutation = relevant_one_hot[1][indices,:]
+                
+                    predicted_fitness =\
+                        fitness_from_prob_non_dms(pssm[mutated_positions.view(-1)],#pssm[mutated_positions],
+                                                  from_mutation[:,mutated_positions.view((-1))][0],
+                                                  to_mutation[:,mutated_positions.view((-1))],
+                                                  device=device)
+                        
+                    actives = predicted_fitness[labels == 1]
+                    inactives = predicted_fitness[labels == 0]
+                        
+                    
+                    
+                    if loss_to_use["max_diff"]:
+                        mxdl = -(actives.max() - inactives.max())
                         
                         
-            if total_steps % checkpoint_every == 0:
+                        if actives.max().cpu().item() > inactives.max().cpu().item():
+                            ongoing_s_mxdl += 1
+                        else: 
+                            ongoing_f_mxdl += 1
+                        
+                        print("\t[MAX stats -> S%d:F%d] - %.3f : %.3f" %\
+                              (ongoing_s_mxdl, 
+                               ongoing_f_mxdl, 
+                               actives.max().cpu().item(),
+                               inactives.max().cpu().item()))
+                        
+                        loss_str.append("MAXDL: %.3f" % mxdl.item())
+                        total_loss += torch.tensor(loss_weights["max_diff"], device=device) * mxdl
+                    
+                    if loss_to_use["dkl"]:
+                        dkl = -dkl_loss(predicted_fitness,labels.to(torch.float32))
+                        
+                        if actives.mean().cpu().item() > inactives.mean().cpu().item():
+                            ongoing_s_dkl += 1
+                        else: 
+                            ongoing_f_dkl += 1
+                        
+                        print("\t[DKL stats -> S%d:F%d] - %.3f : %.3f" %\
+                              (ongoing_s_dkl, 
+                               ongoing_f_dkl, 
+                               actives.mean().cpu().item(),
+                               inactives.mean().cpu().item()))
+                        
+                        
+                        loss_str.append("DKL: %.3f" % dkl.item())
+                        total_loss += torch.tensor(loss_weights["dkl"], device=device) * dkl
+                        
+                    
+                if loss_to_use["nll"] or loss_to_use["orpo"] or loss_to_use["dpo"]:                
+                    masked_logits_repeat = masked_logits[padded_mutated_positions.view((-1)),:].repeat(B,1,1)
+                    masked_logits_repeat = einops.rearrange(masked_logits_repeat, 'B S C -> B C S')
+                    positive_generations = positives[:,:,padded_mutated_positions.view(-1)].squeeze(dim=0)
+                    
                 
-                model_params = model.state_dict()
-                optimizer_params = optimizer.state_dict()
-                saved_dict = {"model_params ":model_params,
-                              "optimizer_params":optimizer_params,
-                              "checkpoint":total_steps}
+                if loss_to_use["nll"]:
+                    
+                    nll_loss = loss(masked_logits_repeat, positive_generations)            
+                    loss_str.append("NLL: %.3f" % nll_loss.item())
+                    total_loss += torch.tensor(loss_weights["nll"], device=device) * nll_loss
+                    
+                if loss_to_use["orpo"] or loss_to_use["dpo"]:
+                    negative_generations = negatives[:,:,padded_mutated_positions.view(-1)].squeeze(dim=0)            
+                    probs =  masked_logits_repeat.softmax(dim=1)
+                    
+                    
+                    #if loss_to_use["orpo"]:
+                    # log_probs = probs.log()
+        
+                    # preferred_log_probs = torch.gather(log_probs,
+                    #                                    1, 
+                    #                                    positive_generations.unsqueeze(dim=1))
                 
-                torch.save(saved_dict, "%s/final_checkpoint_%s.pt" % (weights_path, project_name))
-    
-    model_params = model.state_dict()
-    optimizer_params = optimizer.state_dict()
-    saved_dict = {"model_params ":model_params,
-                  "optimizer_params":optimizer_params}
-    
-    torch.save(saved_dict, "%s/final_%d_%s.pt" % (weights_path, iterations, project_name))
+                    # unpreferred_log_probs = torch.gather(log_probs,
+                    #                                      1, 
+                    #                                      negative_generations.unsqueeze(dim=1))
+                    
+                    # preferred_ref_log_probs = torch.gather(ref_log_probs,
+                    #                                        1, 
+                    #                                        positive_generations.unsqueeze(dim=1))
+                    
+                    # unpreferred_ref_log_probs = torch.gather(ref_log_probs,
+                    #                                          1, 
+                    #                                          negative_generations.unsqueeze(dim=1))
+                    
+                
+                    # log_diff = dpo_beta * (preferred_log_probs - preferred_ref_log_probs) -\
+                    #            dpo_beta * (unpreferred_log_probs - unpreferred_ref_log_probs)
+                               
+                               
+                    #log_diff = dpo_beta * (preferred_log_probs - unpreferred_log_probs)# -\
+                               #dpo_beta * (unpreferred_log_probs - unpreferred_ref_log_probs)                       
+                    
+                    #dpo_loss = -F.logsigmoid(log_diff).mean()
+                    # dpo_loss = -F.logsigmoid(preferred_log_probs - unpreferred_log_probs).mean()
+                    
+                    if loss_to_use["orpo"]:                
+                        preferred_probs = torch.gather(probs,
+                                                       1, 
+                                                       positive_generations.unsqueeze(dim=1))
+                    
+                        unpreferred_probs = torch.gather(probs,
+                                                         1, 
+                                                         negative_generations.unsqueeze(dim=1))
+        
+                        odds_preferred = (preferred_probs.mean(dim=2)) / (1 - preferred_probs.mean(dim=2))
+                        odds_unpreferred = (unpreferred_probs.mean(dim=2)) / (1 - unpreferred_probs.mean(dim=2))
+                        orpo_loss = -F.logsigmoid((odds_preferred/odds_unpreferred).log()).mean()
+                        
+                        loss_str.append("ORPO: %.3f" % orpo_loss.item())
+                        total_loss += torch.tensor(loss_weights["orpo"], device=device) * orpo_loss            
+
+                total_loss.backward()
+                print("Loss (%.3f [%s]) [Epoch %d, I %d]" %\
+                      (total_loss.item(),
+                       " ".join(loss_str),
+                       epoch, 
+                       iter_step))
+                    
+                optimizer.step()
+                
+                if best_sep_checkpoint is not None:
+                    if total_steps % best_sep_checkpoint == 0:
+                        evaluation_metric =\
+                            dataset.evaluate_full(is_msa_transformer=False, 
+                                                  return_act_inact=True,
+                                                  device=device,
+                                                  train=False,
+                                                  plot=False)
+                        new_separation = np.median(evaluation_metric[0]) - np.median(evaluation_metric[1])
+                        
+                        if new_separation > separation:
+                            print("Saving new model (improved from %.3f to %.3f" % (separation, new_separation))
+                            separation = new_separation
+                            
+                            model_params = model.state_dict()
+                            optimizer_params = optimizer.state_dict()
+                            saved_dict = {"model_params ":model_params,
+                                          "optimizer_params":optimizer_params}
+                            
+                            torch.save(saved_dict, "%s/best_sep_%s.pt" % (weights_path, project_name))
+            
+                            dataset.evaluate_full(is_msa_transformer=False, 
+                                                  return_act_inact=True,
+                                                  device=device,
+                                                  train=False,
+                                                  plot=True,
+                                                  save=True)
+                            
+                            
+                if total_steps % checkpoint_every == 0:
+                    
+                    model_params = model.state_dict()
+                    optimizer_params = optimizer.state_dict()
+                    saved_dict = {"model_params ":model_params,
+                                  "optimizer_params":optimizer_params,
+                                  "checkpoint":total_steps}
+                    
+                    torch.save(saved_dict, "%s/final_checkpoint_%s.pt" % (weights_path, project_name))
+        
+        model_params = model.state_dict()
+        optimizer_params = optimizer.state_dict()
+        saved_dict = {"model_params ":model_params,
+                      "optimizer_params":optimizer_params}
+        
+        torch.save(saved_dict, "%s/final_%d_%s.pt" % (weights_path, iterations, project_name))
 
 def evaluate(dataset_path=None,
                     save_path=None,
@@ -755,7 +905,7 @@ def main():
     if type(yaml_args["learning_rate"]) != float:
         yaml_args["learning_rate"] = float(yaml_args["learning_rate"])
     
-    evaluate(**yaml_args)
+    train_esm_model(**yaml_args)
     
     
 if __name__ == "__main__":

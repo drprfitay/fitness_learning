@@ -31,115 +31,15 @@ from random import sample
 from math import ceil
 from collections import OrderedDict
 
-
-blosum62 = substitution_matrices.load("BLOSUM62")
+from plm_base import *
 
 ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
-RESULTS_PATH = "%s/results" % ROOT_PATH
-ITAYFOLD_PATH = "%s/itayFold/" % ROOT_PATH
-WEIGHTS_PATH = "/%s/weights/" % ITAYFOLD_PATH
-
-MSA_PATH = "%s/data/datasets/msa/" % ROOT_PATH
-
-STOCK_MSAS = ["1a3a_1_A.a3m", 
-              "5ahw_1_A.a3m", 
-              "1xcr_1_A.asm",
-              "gfp2.aln"]
-
-MODEL_WEIGHTS_FILE_NAME = "esm3/esm_model_weights.pth"
-LORA_WEIGHTS_FIlE_NAME =  "esm3/esm_lora_weights.pth"
-ENCODER_WEIGHTS_FILE_NAME = "esm3/structure_encoder.pth"
-DECODER_WEIGHTS_FILE_NAME = "esm3/structure_decoder.pth"
-
-
 ROOT_DMS_PATH = "%s/data/datasets/DMS/Data" % ROOT_PATH
 BASE_DMS_PATH = "%s/data/" % ROOT_DMS_PATH
 BASE_DMS_PDB_PATH = "%s/structure_data/" % ROOT_DMS_PATH 
 
-def fix_esm_path():
-    global original_sys_path
-    
-    # Specify the module name and path
-    module_name = "esm"
-    module_path = ITAYFOLD_PATH 
-    
-    # Store the original sys.path
-    original_sys_path = sys.path.copy()
+plm_init(ROOT_PATH)
 
-    # Temporarily add the local directory to sys.path
-    sys.path.insert(0, os.path.abspath(module_path))
-
-    # hack
-    for mdl in [k for k,v in sys.modules.items() if module_name in k]:
-        del sys.modules[mdl]
-
-fix_esm_path()
-
-import esm2
-import string
-
-deletekeys = dict.fromkeys(string.ascii_lowercase)
-deletekeys["."] = None
-deletekeys["*"] = None
-translation = str.maketrans(deletekeys)
-    
-def read_sequence(filename: str) -> tuple[str, str]:
-    """ Reads the first (reference) sequences from a fasta or MSA file."""
-    record = next(SeqIO.parse(filename, "fasta"))
-    return record.description, str(record.seq)
-
-def remove_insertions(sequence: str) -> str:
-    """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
-    return sequence.translate(translation)
-
-def read_msa(filename: str) -> list[tuple[str, str]]:
-    """ Reads the sequences from an MSA file, automatically removes insertions."""
-    return [(record.description, remove_insertions(str(record.seq))) for record in SeqIO.parse(filename, "fasta")]
-
-def load_esm2_model_and_alphabet(model_name):
-    supported_esm2_models =\
-        ["esm1_t34_670M_UR50S",
-         "esm1_t34_670M_UR50D",
-         "esm1_t34_670M_UR100",
-         "esm1_t12_85M_UR50S",
-         "esm1_t6_43M_UR50S",
-         "esm1b_t33_650M_UR50S",
-         "esm_msa1_t12_100M_UR50S",
-         "esm_msa1b_t12_100M_UR50S",        
-         "esm1v_t33_650M_UR90S_1",
-         "esm1v_t33_650M_UR90S_2",
-         "esm1v_t33_650M_UR90S_3",
-         "esm1v_t33_650M_UR90S_4",
-         "esm1v_t33_650M_UR90S_5",
-         "esm_if1_gvp4_t16_142M_UR50",
-         "esm2_t6_8M_UR50D",
-         "esm2_t12_35M_UR50D",
-         "esm2_t30_150M_UR50D",
-         "esm2_t33_650M_UR50D",
-         "esm2_t36_3B_UR50D",
-         "esm2_t48_15B_UR50D"]
-        
-    if model_name not in supported_esm2_models:
-        raise BaseException("Unsupported model %s, model must be in: %s" %\
-                              (model_name, ", ".join(supported_esm2_models)))
-        
-    model_weights_and_data_path = "%s/esm2/%s.pth" % (WEIGHTS_PATH, model_name)
-    
-    if model_weights_and_data_path in os.listdir("%s/esm2" % WEIGHTS_PATH):
-        model_data = torch.load(model_weights_and_data_path)
-    else:    
-        model_data, regression_data = esm2.pretrained._download_model_and_regression_data(model_name)
-        
-        if regression_data is not None:
-            model_data["model"].update(regression_data["model"])
-            
-        # Save model data
-        torch.save(model_data, model_weights_and_data_path)
-        
-    return esm2.pretrained.load_model_and_alphabet_core(model_name, 
-                                                        model_data, 
-                                                        regression_data=None)
-        
 
 def pairwise_cosine(X):
     X = F.normalize(X, dim=-1)
@@ -235,8 +135,6 @@ class EpiNNet(torch.nn.Module):
         return self.sequential(x)
             
 
-
-
 class SeqMLP(torch.nn.Module):
     def __init__(self, 
                  encoding_type,
@@ -264,10 +162,13 @@ class SeqMLP(torch.nn.Module):
         
         
         if encoding_type == "plm_embedding":
-            plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
-            V, plm_d_model = plm.embed_tokens.weight.size()
+            plm_obj = load_model(plm_name)
+            vocab, plm_d_model = plm_obj.get_token_vocab_dim()
+            V = len(vocab)
+            #plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
+            #V, plm_d_model = plm.embed_tokens.weight.size()
                     
-            self.tokenizer = plm_tokenizer
+            self.tokenizer = plm_obj.get_tokenizer()
             self.encoding_func = encoding_func # Should return just requested positiosn working on
             
             def encode(seq):                
@@ -335,18 +236,29 @@ class plmTrunkModel(torch.nn.Module):
                  device=torch.device("cpu"),                 
                  dtype=torch.double):
         super().__init__()
-                
-        plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
-        V, plm_d_model = plm.embed_tokens.weight.size()
-                
-        self.tokenizer = plm_tokenizer
         
-        if (type(plm) == esm2.model.esm2.ESM2):
-            self.last_layer = plm.num_layers
-            def plm_forward_presentation(x):
-                forward = plm.forward(x, repr_layers=[self.last_layer])
-                hh = forward["representations"][self.last_layer]
-                return(hh)
+        
+        # plm = load_model(plm_name)
+        # #plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
+        # V, plm_d_model = plm.embed_tokens.weight.size()
+        
+        plm_obj = load_model(plm_name)
+        plm = plm_obj.get_model()
+        plm_tokenizer = plm_obj.get_tokenizer()
+        vocab, plm_d_model = plm_obj.get_token_vocab_dim()
+        V = len(vocab)
+        
+        self.tokenizer = plm_tokenizer
+        self.plm = plm.to(device)
+        self.last_layer = plm_obj.get_n_layers()
+        
+        # if (type(plm) == esm2.model.esm2.ESM2):
+        #     self.last_layer = plm_obj.get_n_layers()
+            
+        def plm_forward_presentation(x):
+            forward = self.plm.forward(x, repr_layers=[self.last_layer])
+            hh = forward["representations"][self.last_layer]
+            return(hh)
             
         self.forward_func = plm_forward_presentation                
         self.opmode = opmode
@@ -390,7 +302,6 @@ class plmTrunkModel(torch.nn.Module):
             
             
         self.emb_func = emb_pool_func
-        self.plm = plm.to(device)
         self.epinnet_trunk = EpiNNet(d_in=plm_d_model * trunk_d_in_factor,
                                      d_out=1,                 
                                      hidden_layers=hidden_layers,
