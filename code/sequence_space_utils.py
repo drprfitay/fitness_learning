@@ -31,8 +31,11 @@ def fitness_from_prob_non_dms(pssm, wt_tensor, variant_tensor):
                       dim=1)
 
 def fitness_from_prob_non_dms(pssm, wt_tensor, variant_tensor, device=torch.device("cpu")):
-    wt_one_hot = torch.nn.functional.one_hot(torch.tensor(wt_tensor), pssm.shape[1]).to(device)
-    variant_one_hot = torch.nn.functional.one_hot(torch.tensor(variant_tensor), pssm.shape[1]).to(device)
+    # wt_one_hot = torch.nn.functional.one_hot(torch.tensor(wt_tensor), pssm.shape[1]).to(device)
+    # variant_one_hot = torch.nn.functional.one_hot(torch.tensor(variant_tensor), pssm.shape[1]).to(device)
+    wt_one_hot = torch.nn.functional.one_hot(wt_tensor.clone().detach(), pssm.shape[1]).to(device)
+    variant_one_hot = torch.nn.functional.one_hot(variant_tensor.clone().detach(), pssm.shape[1]).to(device)
+
     
     # B for batch size, S for number of mutated positions, V for vocabulary size
     return torch.mean((torch.log(torch.einsum("BSV,SV->BS", 

@@ -466,6 +466,7 @@ class Esm2SequenceActivityDataset(EsmBaseSequenceActivityDataset):
         def __init__(self,
                      dataset_path,    
                      indices=None,
+                     designed_pos=None,
                      esm_alphabet=None,
                      get_mutated_position_function=None,
                      cache=True,
@@ -539,6 +540,11 @@ class Esm2SequenceActivityDataset(EsmBaseSequenceActivityDataset):
             self.mut_info = [itemgetter(*self.indices)(inner) for inner in self.mut_info]
             self.labels = self.labels[indices_tensor]
             
+            if designed_pos is not None:
+                self.designed_pos = torch.tensor(designed_pos)
+                self.one_hot_mut_info = self.one_hot_mut_info[:,:,self.designed_pos - 1] # -1 because pdb is one-based
+                self.tokenized_sequences = self.tokenized_sequences[:,self.designed_pos -1 + 1] # -1 + 1 because pdb is one based / sequnces are padded with bos / eos tokens
+            
             
             self.wt_one_hot = (self.one_hot_mut_info[2].sum(dim=0) > 0).to(dtype=torch.int64)
             self.masked_tensor = torch.unique(self.one_hot_mut_info[2], dim=0)           
@@ -551,6 +557,7 @@ class Esm2SequenceActivityContrastiveDataset(Esm2SequenceActivityDataset):
         def __init__(self,
                      dataset_path,    
                      indices=None,
+                     designed_pos=None,
                      esm_alphabet=None,
                      get_mutated_position_function=None,
                      cache=True,
@@ -568,6 +575,7 @@ class Esm2SequenceActivityContrastiveDataset(Esm2SequenceActivityDataset):
     
             super().__init__(dataset_path,
                              indices,
+                             designed_pos,
                              esm_alphabet,
                              get_mutated_position_function,
                              cache,
@@ -607,6 +615,7 @@ class Esm2SequenceActivityContrastiveDatasetAdvancedMask(Esm2SequenceActivityDat
         def __init__(self,
                      dataset_path,     
                      indices=None,
+                     designed_pos=None,
                      esm_alphabet=None,
                      get_mutated_position_function=None,
                      cache=True,
@@ -624,6 +633,7 @@ class Esm2SequenceActivityContrastiveDatasetAdvancedMask(Esm2SequenceActivityDat
     
             super().__init__(dataset_path, 
                              indices,
+                             designed_pos,
                              esm_alphabet,
                              get_mutated_position_function,
                              cache,
@@ -733,7 +743,8 @@ class Esm2SequenceActivityTrainTest(Dataset):
                      dataset_path,
                      train_indices,
                      test_indices,
-                     esm_model,                     
+                     esm_model,       
+                     designed_pos=None,
                      esm_alphabet=None,
                      full_mask_mut_positions=None,
                      partial_mask_mut_positions=None,
@@ -759,6 +770,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
             self.evaluation_path=evaluation_path
             self.dataset_path=dataset_path         
             
+            self.designed_pos=designed_pos
             self.esm_model=esm_model
             self.esm_alphabet=esm_alphabet
             self.full_mask_mut_positions=full_mask_mut_positions
@@ -796,6 +808,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                     Esm2SequenceActivityContrastiveDatasetAdvancedMask(\
                                                            self.train_dataset_path,
                                                            self.train_indices,
+                                                           designed_pos,
                                                            esm_alphabet,
                                                            partial_mask_mut_positions,
                                                            cache,
@@ -812,6 +825,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
             self.train_dataset_full_mask = \
                 Esm2SequenceActivityContrastiveDataset(self.train_dataset_path,
                                                        self.train_indices,
+                                                       designed_pos,
                                                        esm_alphabet,
                                                        full_mask_mut_positions,
                                                        cache,
@@ -893,6 +907,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 self.test_dataset_full_mask = \
                     Esm2SequenceActivityDataset(self.test_dataset_path,
                                                 self.test_indices,
+                                                self.designed_pos,
                                                 self.esm_alphabet,
                                                 self.full_mask_mut_positions,
                                                 self.cache,
@@ -909,6 +924,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                     Esm2SequenceActivityDataset(\
                                                 self.test_dataset_path,
                                                 self.test_indices,
+                                                self.designed_pos,
                                                 self.esm_alphabet,
                                                 self.partial_mask_mut_positions,
                                                 self.cache,
@@ -1019,7 +1035,8 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 softmax_dim = 2
                 
             batched_sequences_to_run_with_masks = batched_sequences_to_run_with_masks.view(view_shape)
-            logits = self.esm_model(batched_sequences_to_run_with_masks[:,designed_positions].to(device))
+            #logits = self.esm_model(batched_sequences_to_run_with_masks[:,designed_positions].to(device))
+            logits = self.esm_model(batched_sequences_to_run_with_masks.to(device))
             
             if is_msa_transformer:
                 masked_logits = logits["logits"][:,0,1:-1,:]
@@ -1068,8 +1085,9 @@ class Esm2SequenceActivityTrainTest(Dataset):
             if self.test_dataset_full_mask is None:
                 self.lazy_load_func()                
             
-            save_path = "%s/%s" % (self.evaluation_path, self.train_project_name)
-            os.makedirs(save_path, exist_ok=True)
+            # save_path = "%s/%s" % (self.evaluation_path, self.train_project_name)
+            # os.makedirs(save_path, exist_ok=True)
+            save_path = self.evaluation_path
             
             train_results_filename = "train_results.pt" 
             test_results_filename = "test_results.pt"
@@ -1094,15 +1112,22 @@ class Esm2SequenceActivityTrainTest(Dataset):
             batch_size = 30              
         
             n_batches = n_masks // batch_size
-           
-            wt_tokens = torch.tensor(self.esm_alphabet.encode("<cls>" + self.ref_seq + "<eos>"), dtype=torch.int64, device=device).view((1,-1))
+            entire_sequence = self.designed_pos is  None           
+            
+            if entire_sequence:
+                wt_tokens = torch.tensor(self.esm_alphabet.encode("<cls>" + self.ref_seq + "<eos>"), dtype=torch.int64, device=device).view((1,-1))
+                seq_len = len(ref_seq)
+            else:
+                wt_tokens = torch.tensor(self.esm_alphabet.encode(self.ref_seq), dtype=torch.int64, device=device).view((1,-1))
+                wt_tokens = wt_tokens[:, torch.tensor(self.designed_pos) -1] # -1 because pdb is one-based
+                seq_len = wt_tokens.shape[1]
+            
             eos_token = torch.tensor(self.esm_alphabet.encode("<eos>"), dtype=torch.int64, device=device)    
             mask_token = torch.tensor(self.esm_alphabet.encode("<mask>"), dtype=torch.int64, device=device)
             
             
-            
-            results_pulled_from_cache = False                         
-            
+
+            results_pulled_from_cache = False                                     
             initial_batch_idx = 0
             
             if cache and\
@@ -1131,12 +1156,10 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 results_pulled_from_cache = True
                 
             # In case we didn't want to override but truly didnt find results            
-            self.evaluate_full(train=False, device=device, plot=True)
+            # self.evaluate_full(train=False, device=device, plot=True)
             
             if not results_pulled_from_cache:
                 
-                train_fitness_full = self.evaluate_full(train=True, device=device, plot=True)
-                test_fitness_full = self.evaluate_full(train=False, device=device, plot=True)
                         
                 train_results = torch.ones((len(train_dataset.indices), 5), dtype=torch.float32, device=device) * -1
                 test_results = torch.ones((len(test_dataset.indices), 5), dtype=torch.float32, device=device) * -1
@@ -1151,9 +1174,14 @@ class Esm2SequenceActivityTrainTest(Dataset):
                 test_results[:,4] = torch.tensor(test_dataset.indices)
                 train_results[:,3] = train_dataset.labels
                 test_results[:,3] = test_dataset.labels
-                train_results[:,2] = train_fitness_full
-                test_results[:,2] = test_fitness_full
+                
+                if entire_sequence:
+                    train_fitness_full = self.evaluate_full(train=True, device=device, plot=True)
+                    test_fitness_full = self.evaluate_full(train=False, device=device, plot=True)
                     
+                    train_results[:,2] = train_fitness_full
+                    test_results[:,2] = test_fitness_full
+                        
                 
                 masks_df = pd.DataFrame(self.all_masks.detach().numpy())
                 
@@ -1177,11 +1205,17 @@ class Esm2SequenceActivityTrainTest(Dataset):
                     e_i = n_masks                   
                   
                 masks = self.all_masks[s_i:e_i].to(device)            
-                pad=torch.zeros(masks.shape[0], dtype=torch.int64, device=device).view((-1,1))
-                padded_masked_tensor = torch.cat([pad, masks, pad], dim=1)
+                
+                if entire_sequence:
+                    pad=torch.zeros(masks.shape[0], dtype=torch.int64, device=device).view((-1,1))
+                    padded_masked_tensor = torch.cat([pad, masks, pad], dim=1)
+                else:
+                    padded_masked_tensor = masks
+                    
                 padded_mutated_positions = (padded_masked_tensor == 1)            
                 batched_sequences_to_run_with_masks = ((torch.ones(padded_masked_tensor.shape, dtype=torch.int64, device=device) - padded_masked_tensor) * wt_tokens[0,:])
                 batched_sequences_to_run_with_masks += padded_masked_tensor * mask_token # add masks    
+                
                 
                 before = time.time()
                 logits = inf_model(batched_sequences_to_run_with_masks)
@@ -1197,7 +1231,7 @@ class Esm2SequenceActivityTrainTest(Dataset):
                     mutated_positions = mask == 1
                     
                     masked_logits = logits["logits"][i,1:-1,:]                                        
-                    pssm = masked_logits.softmax(dim=1).view((len(self.ref_seq), -1))
+                    pssm = masked_logits.softmax(dim=1).view((seq_len, -1))
                     
                     
                     test_indices = torch.where((test_dataset.one_hot_mut_info[2,] == mask).sum(dim=1) == S)[0]
@@ -1264,6 +1298,10 @@ class Esm2SequenceActivityTrainTest(Dataset):
                         test_results[test_indices,0] = s_i + i
                         test_results[test_indices,1] =  predicted_fitness[test_s:test_e]
                         
+                        print("\t\t Test diff: I%.3f A%.3f" % 
+                              (test_results[test_indices, 1][test_results[test_indices, 3] == 1].mean(),
+                               test_results[test_indices, 1][test_results[test_indices, 3] == 0].mean()))
+                        
                         # mean_act = test_results[test_indices,3][test_results[test_indices,5] == 0,].mean()
                         # mean_inact = test_results[test_indices,3][test_results[test_indices,5] == 1,].mean()
                         # print("Active (%.3f), Inactive (%.3f)" % (mean_act, mean_inact))
@@ -1273,6 +1311,9 @@ class Esm2SequenceActivityTrainTest(Dataset):
                         train_results[train_indices,0] = s_i + i
                         train_results[train_indices,1] =  predicted_fitness[train_s:train_e]
                         
+                        print("\t\t Train diff: I%.3f A%.3f" % 
+                              (train_results[train_indices, 1][train_results[train_indices, 3] == 1].mean(),
+                               train_results[train_indices, 1][train_results[train_indices, 3] == 0].mean()))
                         
                 if cache and batch_idx % flush_cache_every == 0:
                     print("Cached flushed at batch idx %d" % batch_idx)
