@@ -579,6 +579,7 @@ class EpiNNetActivityTrainTest(Dataset):
                     subsample_path = conf["subsample"]
                     subsample_df = pd.read_csv(subsample_path)
                     if "indices" in subsample_df.columns:
+                        print(f"Sampling dataset from size {len(working_dataset)} to size {len(subsample_df['indices'])}")
                         subsample_indices = subsample_df["indices"].tolist()
                         working_dataset = Subset(working_dataset, subsample_indices)
                     else:
