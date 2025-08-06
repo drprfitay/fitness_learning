@@ -849,6 +849,7 @@ def train_plm_trunk(
                 iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
                 plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
                 plt.show()
+                print(y_pred.softmax(dim=1).argmax(dim=1))
             print("[E%d I%d] %.3f"  % (epoch, step, total_loss))
             if total_steps % 1000 == 0:
                 print("\t\tCheckpoint [%d]" % total_steps)
