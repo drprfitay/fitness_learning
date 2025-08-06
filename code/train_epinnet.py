@@ -670,8 +670,7 @@ def train_plm_triplet_model(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     triplet_loss = torch.nn.TripletMarginLoss(margin=margin, eps=1e-7)
-    ce_loss_fn = torch.nn.CrossEntropyLoss()
-
+    
     model.train()
     avg_loss = torch.tensor([]).to(device)
     total_steps = 0
@@ -696,11 +695,9 @@ def train_plm_triplet_model(
             emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
             emb = torch.nn.functional.normalize(emb, dim=1)
             emb_trip = emb[trips]
-            y_pred = model.epinnet_trunk(emb)
 
             trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
-            ce_loss = ce_loss_fn(y_pred, torch.nn.functional.one_hot(y.to(torch.long), 2).to(torch.float))
-            total_loss = trip_loss + ce_loss
+            total_loss = trip_loss
 
             epoch_loss += total_loss.item()
             iter_20b_loss += total_loss.item()
@@ -718,8 +715,7 @@ def train_plm_triplet_model(
                 iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
                 plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
                 plt.show()
-                print(y_pred.softmax(dim=1).argmax(dim=1))
-            print("[E%d I%d] %.3f { Triplet :%.3f, CE: %.3f}" % (epoch, step, total_loss, trip_loss, ce_loss))
+            print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
             if total_steps % 1000 == 0:
                 print("\t\tCheckpoint [%d]" % total_steps)
                 torch.save(model.state_dict(), save_path + "checkpoint_model_%d.pt" % total_steps)
@@ -1227,7 +1223,7 @@ train_test_dataset = EpiNNetActivityTrainTest(
 
 #Train
 model = \
-    train_plm_triplet_model(
+    train_plm_trunk(
         plm_name=plm_name,
         save_path=save_path,
         train_test_dataset=train_test_dataset,
