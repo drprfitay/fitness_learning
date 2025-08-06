@@ -1227,7 +1227,7 @@ model = \
         save_path=save_path,
         train_test_dataset=train_test_dataset,
         device=device,
-        model=model 
+        model=model, 
         lr=1e-4,
     )
 
