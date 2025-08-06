@@ -1191,7 +1191,7 @@ model = plmTrunkModel(
     plm_name=plm_name,
     opmode="mean",
     specific_pos=None,
-    hidden_layers=[1024],
+    hidden_layers=[4096,4096],
     activation="sigmoid",
     layer_norm=False,
     activation_on_last_layer=False,
@@ -1228,7 +1228,7 @@ model = \
         train_test_dataset=train_test_dataset,
         device=device,
         model=model, 
-        lr=1e-4,
+        lr=1e-6,
     )
 
 # train_test_dataset.evaluate(model,
