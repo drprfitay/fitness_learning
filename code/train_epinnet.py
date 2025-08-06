@@ -37,8 +37,26 @@ from collections import OrderedDict
 
 from plm_base import *
 
+import yaml
 
-ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+# Example config.yaml:
+# ---
+# root_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+# dataset_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
+# save_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/one_shot/"
+# weights_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/final_model.pt"
+
+# Load configuration from YAML file
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
+
+root_path = config["root_path"]
+dataset_path = config["dataset_path"]
+save_path = config["save_path"]
+weights_path = config["weights_path"]
+
+
+ROOT_PATH = root_path
 ROOT_DMS_PATH = "%s/data/datasets/DMS/Data" % ROOT_PATH
 BASE_DMS_PATH = "%s/data/" % ROOT_DMS_PATH
 BASE_DMS_PDB_PATH = "%s/structure_data/" % ROOT_DMS_PATH 
@@ -1154,24 +1172,6 @@ def embeddings_finalize_function(agg_dict, dataset):
 
     return agg_dict
 
-
-import yaml
-
-# Example config.yaml:
-# ---
-# root_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
-# dataset_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
-# save_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/one_shot/"
-# weights_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/final_model.pt"
-
-# Load configuration from YAML file
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
-
-root_path = config["root_path"]
-dataset_path = config["dataset_path"]
-save_path = config["save_path"]
-weights_path = config["weights_path"]
 
 # Old code (now replaced by YAML config):
 # root_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
