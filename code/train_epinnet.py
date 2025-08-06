@@ -548,7 +548,7 @@ class EpiNNetActivityTrainTest(Dataset):
                      finalize_func,
                      eval_train=True,
                      eval_test=True,
-                     internal_batch_size=100):
+                     internal_batch_size=20):
 
             model = model.to(self.device)
 
@@ -559,7 +559,8 @@ class EpiNNetActivityTrainTest(Dataset):
 
             if eval_test:
                 confs.append({"train": False,
-                              "path_prefix": "test"})            
+                              "path_prefix": "test",
+                              "subsample": "subsample.csv"})            
 
             for conf in confs:
                 is_train = conf["train"]
@@ -572,6 +573,16 @@ class EpiNNetActivityTrainTest(Dataset):
                     print("Evaluating test dataset")
                     self.lazy_load_func()
                     working_dataset = self.test_dataset
+
+                if "subsample" in conf:
+                    from torch.utils.data import Subset
+                    subsample_path = conf["subsample"]
+                    subsample_df = pd.read_csv(subsample_path)
+                    if "indices" in subsample_df.columns:
+                        subsample_indices = subsample_df["indices"].tolist()
+                        working_dataset = Subset(working_dataset, subsample_indices)
+                    else:
+                        print(f"Warning: 'indices' column not found in {subsample_path}")
                             
                 dataloader =\
                      torch.utils.data.DataLoader(working_dataset, batch_size=internal_batch_size, shuffle=False)
