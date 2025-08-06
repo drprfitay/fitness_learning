@@ -548,7 +548,7 @@ class EpiNNetActivityTrainTest(Dataset):
                      finalize_func,
                      eval_train=True,
                      eval_test=True,
-                     internal_batch_size=10):
+                     internal_batch_size=100):
 
             model = model.to(self.device)
 
@@ -582,7 +582,7 @@ class EpiNNetActivityTrainTest(Dataset):
                     aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data, self.device)
                     
                     if "trip_loss" in aggregated_evaluated_data and (idx + 1) % 20 == 0:
-                        print("Iter %d [%.3f%]" % (idx, idx/len(dataloader)))
+                        print("Iter %d [%.3f]" % (idx, idx/len(dataloader)))
                         trip_loss_data = aggregated_evaluated_data["trip_loss"].cpu().numpy() if hasattr(aggregated_evaluated_data["trip_loss"], "cpu") else aggregated_evaluated_data["trip_loss"]
                         plt.figure()
                         plt.hist(trip_loss_data, bins=30)
