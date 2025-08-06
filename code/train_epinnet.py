@@ -924,13 +924,13 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
     emb = torch.nn.functional.normalize(emb, dim=1)
 
     if "trip_loss" not in agg_dict.keys():
-        agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float)
+        agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float, device=device)
     
     if "embeddings" not in agg_dict.keys():
-        agg_dict['embeddings'] = torch.tensor([], dtype=torch.float)
+        agg_dict['embeddings'] = torch.tensor([], dtype=torch.float, device=device)
 
     if "ground_truth" not in agg_dict.keys():
-        agg_dict['ground_truth'] = torch.tensor([], dtype=torch.float)
+        agg_dict['ground_truth'] = torch.tensor([], dtype=torch.float, device=device)
 
     trips = torch.tensor(online_mine_triplets(y))
 
