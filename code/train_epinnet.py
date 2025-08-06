@@ -9,6 +9,7 @@ Created on Tue Jun 24 13:26:20 2025
 
 import sys, os
 import torch
+from torch.cpu import device_count
 import torch.nn.functional as F
 import loralib as lora
 import scipy.stats
@@ -16,8 +17,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import einops
+
 import yaml
 import argparse
+import time
 
 from esm_smart_dataset import *
 from sequence_space_utils import *
@@ -26,6 +29,7 @@ from Bio import pairwise2
 from Bio.Seq import Seq
 from Bio.Align import substitution_matrices
 from Bio import SeqIO
+from sklearn.manifold import TSNE
 
 from random import sample
 from math import ceil
@@ -33,13 +37,13 @@ from collections import OrderedDict
 
 from plm_base import *
 
+
 ROOT_PATH = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
 ROOT_DMS_PATH = "%s/data/datasets/DMS/Data" % ROOT_PATH
 BASE_DMS_PATH = "%s/data/" % ROOT_DMS_PATH
 BASE_DMS_PDB_PATH = "%s/structure_data/" % ROOT_DMS_PATH 
 
 plm_init(ROOT_PATH)
-
 
 def pairwise_cosine(X):
     X = F.normalize(X, dim=-1)
@@ -62,7 +66,6 @@ def online_mine_triplets(labels):
                 
     return triplets
 
-
 def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbose=False):
         
     indices = np.repeat(False, sequence_df.shape[0])
@@ -81,12 +84,13 @@ def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbo
     return(np.where(indices)[0].tolist())
 
 
-def get_one_hot_encoding(sequence_df, first_col, last_col):
-    si = np.where(sequence_df.columns == first_col)[0][0]
-    ei = np.where(sequence_df.columns == last_col)[0][0]
+def get_one_hot_encoding(sdf, first_col, last_col):
+    si = np.where(sdf.columns == first_col)[0][0]
+    ei = np.where(sdf.columns == last_col)[0][0]
     
     one_hot_encoding = torch.from_numpy(pd.get_dummies(sdf[sdf.columns[si:ei]]).to_numpy()).to(torch.int64)
 
+    return(one_hot_encoding)
     
 class EpiNNet(torch.nn.Module):
     def __init__(self, 
@@ -214,11 +218,11 @@ class SeqMLP(torch.nn.Module):
 def select_design_pos(seq):
     return([seq[21], seq[23], seq[24]])
 
-epinnet = SeqMLP("plm_embedding", 3, select_design_pos, plm_name="esm2_t12_35M_UR50D")
+# epinnet = SeqMLP("plm_embedding", 3, select_design_pos, plm_name="esm2_t12_35M_UR50D")
 
-epinnet.encode("MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN")
+# epinnet.encode("MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN")
 
-         
+     
 # POSITION IS IN PDB (1-based idx!!!!!!)
 class plmTrunkModel(torch.nn.Module):    
     def __init__(self, 
@@ -233,6 +237,7 @@ class plmTrunkModel(torch.nn.Module):
                  specific_pos=None,
                  kernel_size=20,
                  stride=5,
+                 trunk_classes=2,
                  device=torch.device("cpu"),                 
                  dtype=torch.double):
         super().__init__()
@@ -303,7 +308,7 @@ class plmTrunkModel(torch.nn.Module):
             
         self.emb_func = emb_pool_func
         self.epinnet_trunk = EpiNNet(d_in=plm_d_model * trunk_d_in_factor,
-                                     d_out=1,                 
+                                     d_out=trunk_classes,                 
                                      hidden_layers=hidden_layers,
                                      activation=activation,
                                      layer_norm=layer_norm,
@@ -322,12 +327,18 @@ class plmTrunkModel(torch.nn.Module):
         return self.tokenizer.encode(enc_seq)
             
 
-    def forward(self, x):                
+    def _emb_only_forward(self, x):
+        return self.forward_func(x)
+
+    def _forward(self, x):                
         hh = self.forward_func(x)
         emb = self.emb_func(hh)
             
         return emb, hh, self.epinnet_trunk(emb)
     
+    def forward(self, x):
+        return self._emb_only_forward(x)
+
 
 class EpiNNetDataset(Dataset):
     def __init__(self,
@@ -335,6 +346,7 @@ class EpiNNetDataset(Dataset):
                  indices,
                  encoding_function,
                  encoding_identifier,
+                 external_encoding=None,
                  cache=True,
                  sequence_column_name='full_seq',                 
                  activity_column_name='inactive',   
@@ -357,25 +369,32 @@ class EpiNNetDataset(Dataset):
         self.encoding_function = encoding_function
         self.cache_path = "%s_mlp_cache/" % dataset_path.split(".csv")[0]       
         self.cache = cache
+    
         
-        os.makedirs(self.cache_path, exist_ok=True)
-        os.makedirs("%s/misc" % self.cache_path, exist_ok=True)   
+        if external_encoding is None:
         
-        tokenized_sequences_filename = "%s_encoded_sequences.pt"  % encoding_identifier
-        cached_files = os.listdir("%s/misc" % self.cache_path)
-        
-        
-        if self.cache and tokenized_sequences_filename in cached_files:
-            self.encoded_tensor = torch.load("%s/misc/%s" % (self.cache_path, tokenized_sequences_filename))
-        else:
-            print("Tokenizing sequences in a non-DMS dataset, this may take a while")                              
-            encoded_sequences = [torch.tensor(self.encoding_function(seq)) for seq in self.sequence_dataframe[self.sequence_column_name].to_list()]
-            self.encoded_tensor = torch.stack(encoded_sequences, dim=0)
+            os.makedirs(self.cache_path, exist_ok=True)
+            os.makedirs("%s/misc" % self.cache_path, exist_ok=True)   
             
-        if self.cache:        
-            print("Caching \n\t(1) %s" % (tokenized_sequences_filename))
-            torch.save(self.encoded_tensor, "%s/misc/%s" % \
-                       (self.cache_path, tokenized_sequences_filename))
+            tokenized_sequences_filename = "%s_encoded_sequences.pt"  % encoding_identifier
+            cached_files = os.listdir("%s/misc" % self.cache_path)
+            
+            
+            if self.cache and tokenized_sequences_filename in cached_files:
+                self.encoded_tensor = torch.load("%s/misc/%s" % (self.cache_path, tokenized_sequences_filename))
+            else:
+                print("Tokenizing sequences in a non-DMS dataset, this may take a while")                              
+                encoded_sequences = [torch.tensor(self.encoding_function(seq)) for seq in self.sequence_dataframe[self.sequence_column_name].to_list()]
+                self.encoded_tensor = torch.stack(encoded_sequences, dim=0)
+                
+            if self.cache:        
+                print("Caching \n\t(1) %s" % (tokenized_sequences_filename))
+                torch.save(self.encoded_tensor, "%s/misc/%s" % \
+                           (self.cache_path, tokenized_sequences_filename))
+                    
+                    
+        else:
+            self.encoded_tensor = external_encoding
         
         # subset based on indices
         if indices is not None:                
@@ -395,7 +414,7 @@ class EpiNNetDataset(Dataset):
         if indices is None:
             self.indices = [i for i in range(0, self.sequence_dataframe.shape[0])]
         
-        indices_tensor = torch.tensor(self.indices)#torch.tensor(sample(self.indices, 100)) ##       #
+        indices_tensor = torch.tensor(self.indices)#torch.tensor(sample(self.indices, 100)) ##       #torch.tensor(sample(self.indices, 1000)) ##       #
         # indices_tensor = sample(indices_tensor[self.labels[indices_tensor] == 0].tolist(), torch.unique(self.labels[indices_tensor], return_counts=True)[1][1].int()
         # ) + indices_tensor[self.labels[indices_tensor] == 1].tolist()
 
@@ -419,7 +438,8 @@ class EpiNNetActivityTrainTest(Dataset):
                      train_indices,
                      test_indices,
                      encoding_function,
-                     encoding_identifier,       
+                     encoding_identifier,  
+                     external_encoding=None,
                      cache=True,
                      lazy_load=True,
                      sequence_column_name='full_seq',
@@ -439,8 +459,9 @@ class EpiNNetActivityTrainTest(Dataset):
             
             self.encoding_function = encoding_function
             self.encoding_identifier = encoding_identifier
+            self.external_encoding = external_encoding
             self.cache=cache
-            self.lazy_load=lazy_load,
+            self.lazy_load=lazy_load
             self.sequence_column_name=sequence_column_name
             self.activity_column_name=activity_column_name
             self.ref_seq=ref_seq
@@ -467,217 +488,160 @@ class EpiNNetActivityTrainTest(Dataset):
                                    self.train_indices,
                                    self.encoding_function,
                                    self.encoding_identifier,
+                                   self.external_encoding,
                                    self.cache,
                                    self.sequence_column_name,
                                    self.activity_column_name,
                                    self.labels_dtype)
                     
             self.size = len(self.train_dataset)
+
+            self.loaded = False
+
+            if not self.lazy_load:
+                self.loaded = True
+                self.lazy_load_func()
             
         def lazy_load_func(self):
-                self.test_dataset =\
-                    EpiNNetDataset(self.test_dataset_path,
-                                   self.test_indices,
-                                   self.encoding_function,
-                                   self.encoding_identifier,
-                                   self.cache,
-                                   self.sequence_column_name,
-                                   self.activity_column_name,
-                                   self.labels_dtype)
+
+                if not self.loaded:
+                    self.test_dataset =\
+                        EpiNNetDataset(self.test_dataset_path,
+                                    self.test_indices,
+                                    self.encoding_function,
+                                    self.encoding_identifier,
+                                    self.external_encoding,
+                                    self.cache,
+                                    self.sequence_column_name,
+                                    self.activity_column_name,
+                                    self.labels_dtype)
+                    self.loaded = True
                     
         def __getitem__(self,idx):
             return self.train_dataset[idx]
                 
         def __len__(self):
-            return self.size           
-
-
-
-# device = torch.device("mps")
-# train_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts")
-# test_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts", rev=True)
-
-# # model = plmTrunkModel("esm2_t12_35M_UR50D", 
-# #                       opmode="pos",
-# #                       specific_pos=[1],
-# #                       activation="gelu").to(device)
-
-# model = plmTrunkModel("esm2_t12_35M_UR50D", 
-#                       opmode="mean",
-#                       #specific_pos=pos_to_use,
-#                       activation="sigmoid",
-#                       layer_norm=False,
-#                       activation_on_last_layer=False).to(device)
-
-# dataset = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
-# ref_seq = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
-
-
-# train_test_dataset =\
-#      EpiNNetActivityTrainTest(train_project_name="",
-#                              evaluation_path="",
-#                              dataset_path=dataset,
-#                              train_indices=train_indices_func,
-#                              test_indices=test_indices_func,
-#                              encoding_function=model.encode,
-#                              encoding_identifier="esm2_t12_35M_UR50D",       
-#                              cache=True,
-#                              lazy_load=True,
-#                              sequence_column_name='full_seq',
-#                              activity_column_name='inactive',
-#                              ref_seq=ref_seq,
-#                              labels_dtype=torch.float32)
-
-
-
-# pos_to_use = [int(x[1:]) for x in train_test_dataset.train_dataset.sequence_dataframe.columns[3:25].tolist()]
-
-
-    
-
-# train_data_loader = torch.utils.data.DataLoader(train_test_dataset, 
-#                                                 batch_size=32, 
-#                                                 shuffle=True)
-    
-
-# iterations = 5000
-# n_epochs = ceil(iterations / len(train_data_loader))
-# total_steps = 0
-
-
-# optimizer = torch.optim.Adam(model.parameters(),  lr=4e-6,  weight_decay=0.1)    
-# l1_loss = torch.nn.L1Loss().to(device)
-# l2_loss = torch.nn.MSELoss().to(device)
-# criterion = torch.nn.BCELoss()
-# triplet_loss = torch.nn.TripletMarginLoss(margin=4.0,  eps=1e-7)
-# model.train()
-
-# avg_loss = torch.tensor([]).to(device)
-
-# loss_steps = 0
-# for epoch in range(0, n_epochs):
-#     running_loss = torch.tensor(0, dtype=torch.float).to(device)
-    
-#     for iter_step, batch in enumerate(train_data_loader):
-#         x = batch[0].to(device)
-#         y = batch[1].to(device)
-        
-#         trips = torch.tensor(online_mine_triplets(y))
-#         if len(trips) <= 0:
-#             continue     
-        
-#         x = x[:,torch.tensor(pos_to_use) +1 - 1] # No +1 because <bos> encoding, pos_to_use is pdb indexed!!!
-        
-#         optimizer.zero_grad()
-#         _, hh, y_pred = model(x)
-#         #forward = model.plm(x, repr_layers=[model.plm.num_layers])
-#         emb = torch.nn.functional.normalize(hh, dim=1).mean(dim=1)
-#         #emb = torch.nn.functional.normalize(forward["representations"][model.plm.num_layers][:,model.specific_pos + 1,:], dim=1).flatten(1,2)
-        
-        
-#         emb_trip = emb[trips]
-#         trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
-#         #l2 = l2_loss(y_pred, y)
-#         ce_loss = criterion(y_pred.view(-1), y)
-#         total_loss = trip_loss
-#         running_loss += total_loss.item()
-#         total_loss.backward()        
-#         optimizer.step()
-        
-        
-#         if (iter_step + 1) % 20 == 0:
-#             loss_steps += 1
-#             running_loss = running_loss /  20
+            return self.size  
             
-#             if len(avg_loss) == 0:
-#                 avg_loss = running_loss.detach().reshape(-1)
-#             else:
-#                 avg_loss = torch.cat([avg_loss, running_loss.detach().reshape(-1)])
-                
-#             running_loss = torch.tensor(0, dtype=torch.float).to(device)
-#             plt.plot(range(1, loss_steps + 1), avg_loss.cpu().detach().numpy())
-#             plt.show()
-            
-#         print("[E%d I%d] %.3f { Triplet :%.3f CE/L2 Trunk %.3f }" % (epoch, 
-#                                                              iter_step, 
-#                                                              total_loss,
-#                                                              trip_loss,
-#                                                              ce_loss))
+        @torch.no_grad()
+        def evaluate(self,
+                     model,
+                     eval_func,
+                     finalize_func,
+                     eval_train=True,
+                     eval_test=True,
+                     internal_batch_size=10):
 
-#         # stds = emb.std(dim=0)
-#         # var_loss = torch.mean(F.relu(1 - stds))
+            model = model.to(self.device)
+
+            confs = []
+            if eval_train:
+                confs.append({"train": True,
+                              "path_prefix": "train"})
+
+            if eval_test:
+                confs.append({"train": False,
+                              "path_prefix": "test"})            
+
+            for conf in confs:
+                is_train = conf["train"]
+                path_prefix = conf["path_prefix"]
+
+                if is_train:
+                    print("Evaluating train dataset")
+                    working_dataset = self.train_dataset
+                else:
+                    print("Evaluating test dataset")
+                    self.lazy_load_func()
+                    working_dataset = self.test_dataset
+                            
+                dataloader =\
+                     torch.utils.data.DataLoader(working_dataset, batch_size=internal_batch_size, shuffle=False)
+
+                aggregated_evaluated_data = {}
+
+                for idx, data in enumerate(dataloader):
+                    aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data)
+                    
+                    if "trip_loss" in aggregated_evaluated_data and (idx + 1) % 20 == 0:
+                        trip_loss_data = aggregated_evaluated_data["trip_loss"].cpu().numpy() if hasattr(aggregated_evaluated_data["trip_loss"], "cpu") else aggregated_evaluated_data["trip_loss"]
+                        plt.figure()
+                        plt.hist(trip_loss_data, bins=30)
+                        plt.title(f"Triplet Loss Histogram at batch {idx+1}")
+                        plt.xlabel("Triplet Loss")
+                        plt.ylabel("Frequency")
+                        plt.draw()
+                        plt.pause(0.001)
+                        plt.close()
+                                    
+                evaluated_data_to_save = finalize_func(aggregated_evaluated_data, working_dataset)
+
+                prefix_folder = os.path.join(self.evaluation_path, path_prefix)
+                os.makedirs(prefix_folder, exist_ok=True)
+
+                for key, value in evaluated_data_to_save.items():
+                    filename = f"{key}"
+                    # Create the prefix folder within evaluation_path                    
+                    # Save matplotlib figure
+                    if hasattr(value, "savefig"):
+                        fig_path = os.path.join(prefix_folder, f"{filename}.png")
+                        value.savefig(fig_path)
+                        plt.close(value)
+                    # Save pandas DataFrame
+                    elif hasattr(value, "to_csv"):
+                        csv_path = os.path.join(prefix_folder, f"{filename}.csv")
+                        value.to_csv(csv_path, index=False)
+                    # Save torch tensor
+                    elif hasattr(value, "cpu") and hasattr(value, "detach"):
+                        tensor_path = os.path.join(prefix_folder, f"{filename}.pt")
+                        torch.save(value.cpu().detach(), tensor_path)
+                    # Save numpy array
+                    elif hasattr(value, "shape") and hasattr(value, "dtype"):
+                        npy_path = os.path.join(prefix_folder, f"{filename}.npy")
+                        np.save(npy_path, value)
+                    else:
+                        # Optionally, skip or print warning for unknown types
+                        print(f"Warning: Could not save {key}, unknown type {type(value)}")
+
             
-#         # l1 = l1_loss(y_pred.view(-1), y)
-#         # l2 = l2_loss(y_pred.view(-1), y)
-        
-#         # bce_loss = criterion(y_pred.view(-1), y)
-#         # total_loss =  bce_loss + 5*  var_loss
-#         # total_loss.backward()
-#         # # loss_str ="L1: %.3f, L2: %.3f, bce_loss: %.3f, var: %.3f" % (l1.item(), l2.item(), bce_loss.item(), var_loss.item())
-        
-#         # # for name, param in model.epinnet_trunk.named_parameters():
-#         # #     if param.grad is None:
-#         # #         print(param.grad)
-            
-#         # print("Loss (%.3f [%s]) [Epoch %d, I %d]" %\
-#         #           (total_loss.item(),
-#         #            loss_str,#" ".join(loss_str),
-#         #            epoch, 
-#         #            iter_step))
-        
-        
-#         # triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
-                
-#         # optimizer.step()
-        
-def train_plm_triplet_model(plm_name: str,
-                            dataset_path: str,
-                            ref_seq: str,
-                            save_path: str,
-                            train_indices_func,
-                            test_indices_func=None,
-                            pos_to_use=None,
-                            batch_size=32,
-                            iterations=20000,
-                            margin=1.0,
-                            lr=4e-6,
-                            weight_decay=0.1,
-                            encoding_identifier=None,
-                            opmode="mean",
-                            hidden_layers=[1024],
-                            activation="sigmoid",
-                            layer_norm=False,
-                            activation_on_last_layer=False,
-                            device=torch.device("cpu")):    
-    
-    
+def train_plm_triplet_model(
+    plm_name: str,
+    save_path: str,
+    train_test_dataset,
+    pos_to_use=None,
+    batch_size=32,
+    iterations=20000,
+    margin=1.0,
+    lr=4e-6,
+    weight_decay=0.1,
+    encoding_identifier=None,
+    opmode="mean",
+    hidden_layers=[1024],
+    activation="sigmoid",
+    layer_norm=False,
+    activation_on_last_layer=False,
+    device=torch.device("cpu"),
+    model=None  
+):
     torch.cuda.empty_cache()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
+    if model is None:
+        model = plmTrunkModel(
+            plm_name=plm_name,
+            opmode=opmode,
+            specific_pos=pos_to_use,
+            hidden_layers=hidden_layers,
+            activation=activation,
+            layer_norm=layer_norm,
+            activation_on_last_layer=activation_on_last_layer,
+            device=device
+        ).to(device)
+    else:
+        model = model.to(device)
 
-    model = plmTrunkModel(plm_name=plm_name,
-                          opmode=opmode,
-                          specific_pos=pos_to_use,
-                          hidden_layers=hidden_layers,
-                          activation=activation,
-                          layer_norm=layer_norm,
-                          activation_on_last_layer=activation_on_last_layer,
-                          device=device).to(device)
-
-    print("Preparing dataset...")
-    train_test_dataset = EpiNNetActivityTrainTest(train_project_name="triplet_training",
-                                                  evaluation_path="",
-                                                  dataset_path=dataset_path,
-                                                  train_indices=train_indices_func,
-                                                  test_indices=test_indices_func,
-                                                  encoding_function=model.encode,
-                                                  encoding_identifier=encoding_identifier or plm_name,
-                                                  cache=True,
-                                                  lazy_load=True,
-                                                  sequence_column_name='full_seq',
-                                                  activity_column_name='inactive',
-                                                  ref_seq=ref_seq,
-                                                  labels_dtype=torch.float32,
-                                                  device=device)
+    if train_test_dataset is None:
+        raise ValueError("train_test_dataset must be provided as an argument.")
 
     if pos_to_use is None:
         pos_to_use = [int(x[1:]) for x in train_test_dataset.train_dataset.sequence_dataframe.columns[3:25].tolist()]
@@ -688,72 +652,610 @@ def train_plm_triplet_model(plm_name: str,
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     triplet_loss = torch.nn.TripletMarginLoss(margin=margin, eps=1e-7)
-    #ce_loss_fn = torch.nn.BCELoss()
     
     model.train()
     avg_loss = torch.tensor([]).to(device)
-    loss_steps = 0
+    total_steps = 0
+    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
+    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
+    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
 
     for epoch in range(n_epochs):
-        running_loss = torch.tensor(0.0).to(device)
+        epoch_loss = torch.tensor(0.0).to(device)
+        iter_20b_loss = torch.tensor(0.0).to(device)
         for step, batch in enumerate(train_loader):
             x = batch[0].to(device)
             y = batch[1].to(device)
-            
             trips = torch.tensor(online_mine_triplets(y))
+
             if len(trips) <= 0:
                 continue     
-            
-            x = x[:,torch.tensor(pos_to_use) +1 - 1] # No +1 because <bos> encoding, pos_to_use is pdb indexed!!!
-            
             optimizer.zero_grad()
-            _, hh, y_pred = model(x)
-            #forward = model.plm(x, repr_layers=[model.plm.num_layers])
-            emb = torch.nn.functional.normalize(hh, dim=1).mean(dim=1)
+
+            hh = model(x)
+
+            emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
             emb = torch.nn.functional.normalize(emb, dim=1)
-            #emb = torch.nn.functional.normalize(forward["representations"][model.plm.num_layers][:,model.specific_pos + 1,:], dim=1).flatten(1,2)
-            
-            
             emb_trip = emb[trips]
+
             trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
             total_loss = trip_loss
-            running_loss += total_loss.item()
+
+            epoch_loss += total_loss.item()
+            iter_20b_loss += total_loss.item()
+
             total_loss.backward()        
             optimizer.step()
-            
-            
-            if (iter_step + 1) % 20 == 0:
-                loss_steps += 1
-                running_loss = running_loss /  20
-                
-                if len(avg_loss) == 0:
-                    avg_loss = running_loss.detach().reshape(-1)
-                else:
-                    avg_loss = torch.cat([avg_loss, running_loss.detach().reshape(-1)])
-                    
-                running_loss = torch.tensor(0, dtype=torch.float).to(device)
-                plt.plot(range(1, loss_steps + 1), avg_loss.cpu().detach().numpy())
+
+            total_steps += 1
+            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
+
+            if (step + 1) % 20 == 0:
+                total_steps += 1
+                iter_20b_loss = iter_20b_loss /  20
+                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
+                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
+                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
                 plt.show()
-                
-            print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, 
-                                                       iter_step, 
-                                                       total_loss,
-                                                       trip_loss))
-
-    # Save model
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    torch.save(model.state_dict(), save_path)
+            print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
+            if total_steps % 1000 == 0:
+                print("\t\tCheckpoint [%d]" % total_steps)
+                torch.save(model.state_dict(), save_path + "checkpoint_model_%d.pt" % total_steps)
+                torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
+                torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
+                torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
+        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
+    torch.save(model.state_dict(), save_path + "final_model.pt")
+    torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
+    torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
+    torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
     print(f"Model saved to {save_path}")
-
     return model
 
-model = train_plm_triplet_model(
-    plm_name="esm2_t12_35M_UR50D",
-    dataset_path="/path/to/dataset.csv",
-    ref_seq="MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN",
-    save_path="/tmp/trained_plm_trunk.pt",
-    train_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts"),
-    test_indices_func=lambda sdf: get_indices(sdf, [1,2,3], nmuts_column="num_muts", rev=True),
+
+def train_plm_trunk(
+    plm_name: str,
+    save_path: str,
+    train_test_dataset,
     pos_to_use=None,
-    device=torch.device("cuda")  # or "cuda" or "cpu"
+    batch_size=32,
+    iterations=20000,
+    margin=1.0,
+    lr=1e-7,
+    weight_decay=0.1,
+    encoding_identifier=None,
+    opmode="mean",
+    hidden_layers=[1024],
+    activation="sigmoid",
+    layer_norm=False,
+    activation_on_last_layer=False,
+    device=torch.device("cpu"),
+    model=None  
+):
+    torch.cuda.empty_cache()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    if model is None:
+        model = plmTrunkModel(
+            plm_name=plm_name,
+            opmode=opmode,
+            specific_pos=pos_to_use,
+            hidden_layers=hidden_layers,
+            activation=activation,
+            layer_norm=layer_norm,
+            activation_on_last_layer=activation_on_last_layer,
+            device=device
+        ).to(device)
+    else:
+        model = model.to(device)
+
+    if train_test_dataset is None:
+        raise ValueError("train_test_dataset must be provided as an argument.")
+
+    if pos_to_use is None:
+        pos_to_use = [int(x[1:]) for x in train_test_dataset.train_dataset.sequence_dataframe.columns[3:25].tolist()]
+
+    print(f"Using positions: {pos_to_use}")
+
+    # One-hot encode labels for training
+    train_test_dataset.train_dataset.labels = torch.nn.functional.one_hot(
+        train_test_dataset.train_dataset.labels.to(torch.long), 2
+    ).to(torch.float)
+
+    train_loader = torch.utils.data.DataLoader(train_test_dataset, batch_size=batch_size, shuffle=True)
+    n_epochs = ceil(iterations / len(train_loader))
+
+    optimizer = torch.optim.Adam(model.epinnet_trunk.parameters(), lr=lr, weight_decay=weight_decay)
+    ce_loss_fn = torch.nn.CrossEntropyLoss()
+    
+    model.train()
+    avg_loss = torch.tensor([]).to(device)
+    
+    total_steps = 0
+    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
+    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
+    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
+
+    # Freeze gradients for plm
+    for p in model.plm.parameters():
+        p.requires_grad = False
+
+    for epoch in range(n_epochs):
+        epoch_loss = torch.tensor(0.0).to(device)
+        iter_20b_loss = torch.tensor(0.0).to(device)
+        for step, batch in enumerate(train_loader):
+            x = batch[0].to(device)
+            y = batch[1].to(device)
+
+            optimizer.zero_grad()
+
+            hh = model(x)
+
+            emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
+            emb = torch.nn.functional.normalize(emb, dim=1)
+
+            #visualize_batch
+            # Add labels to the heatmap
+            sorted_indices = np.argsort(y.argmax(dim=1).cpu().numpy())
+            sorted_labels = y.argmax(dim=1).cpu().numpy()[sorted_indices]
+            heatmap_data = pairwise_cosine(emb)[sorted_indices, :][:, sorted_indices].cpu().numpy()
+            ax = sns.heatmap(
+                heatmap_data,
+                xticklabels=sorted_labels,
+                yticklabels=sorted_labels
+            )
+            ax.set_xlabel("Sample (sorted by label)")
+            ax.set_ylabel("Sample (sorted by label)")
+            ax.set_title("Pairwise Cosine Similarity Heatmap (sorted by label)")
+            plt.draw()
+            plt.pause(0.001)
+            plt.close()
+
+
+            y_pred = model.epinnet_trunk(emb)
+            total_loss = ce_loss_fn(y_pred, y)
+
+            epoch_loss += total_loss.item()
+            iter_20b_loss += total_loss.item()
+
+            total_loss.backward()        
+            optimizer.step()
+
+            total_steps += 1
+            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
+
+            if (step + 1) % 20 == 0:
+                total_steps += 1
+                iter_20b_loss = iter_20b_loss /  20
+                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
+                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
+                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
+                plt.show()
+            print("[E%d I%d] %.3f"  % (epoch, step, total_loss))
+            if total_steps % 1000 == 0:
+                print("\t\tCheckpoint [%d]" % total_steps)
+                torch.save(model.state_dict(), save_path + "checkpoint_model_%d.pt" % total_steps)
+                torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
+                torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
+                torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
+        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
+    torch.save(model.state_dict(), save_path + "final_model.pt")
+    torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
+    torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
+    torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
+    print(f"Model saved to {save_path}")
+    return model
+
+
+def train_epinnet(
+    train_test_dataset,
+    save_path: str,
+    encodings=None,
+    model=None,
+    batch_size=32,
+    iterations=20000,                  
+    lr=1e-7,
+    weight_decay=0.1,
+    hidden_layers=[1024],
+    activation="sigmoid",
+    layer_norm=True,
+    activation_on_last_layer=False,
+    device=torch.device("cpu"),
+):
+
+    torch.cuda.empty_cache()
+
+    # Initialize model if not provided
+    if model is None:
+        if encodings is None:
+            raise ValueError("If model is not provided, encodings must be passed to initialize the model.")
+        model = EpiNNet(
+            encodings.shape[1],
+            2,
+            hidden_layers=hidden_layers,
+            activation=activation,
+            layer_norm=layer_norm,
+            activation_on_last_layer=activation_on_last_layer,
+            device=device
+        ).to(device)
+
+    # One-hot encode labels for training
+    train_test_dataset.train_dataset.labels = torch.nn.functional.one_hot(
+        train_test_dataset.train_dataset.labels.to(torch.long), 2
+    ).to(torch.float)
+
+    train_loader = torch.utils.data.DataLoader(train_test_dataset, batch_size=batch_size, shuffle=True)
+    n_epochs = ceil(iterations / len(train_loader))
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    ce_loss_fn = torch.nn.CrossEntropyLoss()
+    
+    model.train()
+
+    total_steps = 0
+    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
+    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
+    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
+
+    for epoch in range(n_epochs):
+        epoch_loss = torch.tensor(0.0).to(device)
+        iter_20b_loss = torch.tensor(0.0).to(device)
+        for step, batch in enumerate(train_loader):
+            x = batch[0].to(device)
+            y = batch[1].to(device)
+            optimizer.zero_grad()
+            y_pred = model(x)
+
+            total_loss = ce_loss_fn(y_pred, y)
+            epoch_loss += total_loss.item()
+            iter_20b_loss += total_loss.item()
+            total_loss.backward()        
+            optimizer.step()
+            total_steps += 1
+
+            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
+            
+            if (step + 1) % 20 == 0:
+                iter_20b_loss = iter_20b_loss / 20
+                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
+                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
+                plt.plot(range(1, total_steps + 1), running_20b_loss.cpu().detach().numpy())
+                plt.show()
+                
+            print("[E%d I%d] %.3f" % (epoch, step, total_loss))
+        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
+        
+    # # Usage:
+    # train_test_dataset.lazy_load_func()
+    # train_test_dataset.test_dataset.labels = torch.nn.functional.one_hot(
+    #     train_test_dataset.test_dataset.labels.to(torch.long), 2
+    # ).to(torch.float)
+    
+    # eval_batch_size = 500
+    # test_pred = torch.tensor([])
+    # test_loader = torch.utils.data.DataLoader(
+    #     train_test_dataset.test_dataset, 
+    #     batch_size=eval_batch_size, 
+    #     shuffle=False
+    # )
+    
+    # test_score = torch.tensor([], dtype=torch.float)
+    # with torch.no_grad():
+    #     for i, batch in enumerate(test_loader):
+    #         print("Evaluating test batch %d" % i)
+    #         x = batch[0].to(device)
+    #         y = batch[1].to(device)
+    #         y_pred = model(x)
+    #         test_pred = torch.cat([test_pred, y_pred.argmax(dim=1).cpu().detach()], dim=0)
+    #         test_score = torch.cat([test_score, y_pred.softmax(dim=1)[:,0].cpu().detach()])
+            
+    # Save model
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save(model.state_dict(), save_path + "/model.pt")
+    torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
+    torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
+    torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
+    print(f"Model saved to {save_path}")
+    return model
+
+@torch.no_grad()
+def epinnt_evaluate_function(model, data, aggregated_evaluated_data, device=torch.device("cpu")):
+    x = data[0].to(device)
+    y = data[1].to(device)
+    y_pred = model(x)
+    ce_loss_fn = torch.nn.CrossEntropyLoss()
+    batch_loss = ce_loss_fn(y_pred, y)
+
+    # Accumulate predictions, scores, true labels, and loss
+    if "test_pred" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["test_pred"] = torch.tensor([], dtype=torch.long)
+    if "test_score" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["test_score"] = torch.tensor([], dtype=torch.float)
+    if "true_labels" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["true_labels"] = torch.tensor([], dtype=torch.long)
+    if "loss" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["loss"] = torch.tensor([], dtype=torch.float)
+
+    aggregated_evaluated_data["test_pred"] = torch.cat(
+        [aggregated_evaluated_data["test_pred"], y_pred.argmax(dim=1).cpu().detach()], dim=0
+    )
+    aggregated_evaluated_data["test_score"] = torch.cat(
+        [aggregated_evaluated_data["test_score"], y_pred.softmax(dim=1)[:, 0].cpu().detach()]
+    )
+    aggregated_evaluated_data["true_labels"] = torch.cat(
+        [aggregated_evaluated_data["true_labels"], y.argmax(dim=1).cpu().detach()]
+    )
+    aggregated_evaluated_data["loss"] = torch.cat(
+        [aggregated_evaluated_data["loss"], batch_loss.detach().reshape(-1).cpu()]
+    )
+
+    return aggregated_evaluated_data
+
+@torch.no_grad()
+def epinnt_finalize_function(aggregated_evaluated_data, dataset):
+    # Restore original finalize logic
+    true_labels = aggregated_evaluated_data["true_labels"].cpu().detach().numpy()
+    test_score = aggregated_evaluated_data["test_score"].cpu().detach().numpy()
+    test_pred = aggregated_evaluated_data["test_pred"].cpu().detach().numpy()
+    order = np.argsort(-test_score)
+
+    top_2000 = test_score[order[1:200]]
+    top_2000_labels = true_labels[order[1:200]]
+
+    act = top_2000[top_2000_labels == 0]
+    inact = top_2000[top_2000_labels == 1]
+
+    evaluated_df = pd.DataFrame({
+        "Score": test_score,
+        "GT": true_labels,
+        "Pred": test_pred,
+        "Indices": train_test_dataset.test_dataset.indices
+    })
+
+    evaluated_df.to_csv(save_path + "/eval.csv", index=False)
+    print(f"Model saved to {save_path}")
+
+    return {
+        "evaluated_df": evaluated_df,
+        "test_score": test_score,
+        "test_pred": test_pred,
+        "true_labels": true_labels,
+        "act": act,
+        "inact": inact
+    }
+
+@torch.no_grad
+def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu")):
+    margin = 1
+    pos_to_use = [42, 44, 61, 65, 68, 69, 72, 94, 108, 112, 121, 145, 148, 150, 167, 181, 185, 203, 205, 220, 222, 224]
+    x = data[0].to(device)
+    y = data[1].to(device)
+
+    triplet_loss = torch.nn.TripletMarginLoss(margin=margin, eps=1e-7)
+
+    hh = model(x)
+
+    emb = torch.nn.functional.normalize(hh[:, torch.tensor(pos_to_use), :], dim=1).mean(dim=1)
+    emb = torch.nn.functional.normalize(emb, dim=1)
+
+    if "trip_loss" not in agg_dict.keys():
+        agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float)
+    
+    if "embeddings" not in agg_dict.keys():
+        agg_dict['embeddings'] = torch.tensor([], dtype=torch.float)
+
+    if "ground_truth" not in agg_dict.keys():
+        agg_dict['ground_truth'] = torch.tensor([], dtype=torch.float)
+
+    trips = torch.tensor(online_mine_triplets(y))
+
+    if len(trips) > 0:
+        emb_trip = emb[trips]
+        trip_loss = triplet_loss(emb_trip[:, 0, :], emb_trip[:, 1, :], emb_trip[:, 2, :])
+        agg_dict["trip_loss"] = torch.cat([agg_dict['trip_loss'], trip_loss.detach().reshape(-1)], dim=0)
+
+    agg_dict["embeddings"] = torch.cat([agg_dict['embeddings'], emb.detach()], dim=0)
+    agg_dict["ground_truth"] = torch.cat([agg_dict["ground_truth"], y.detach().reshape(-1)], dim=0)
+
+    return agg_dict
+
+@torch.no_grad()
+def embeddings_finalize_function(agg_dict, dataset):
+    embeddings = agg_dict["embeddings"].cpu().numpy()
+    ground_truth = agg_dict["ground_truth"].cpu().numpy()
+
+    # If embeddings is bigger than 15K, randomly sample 15K data points (by value, not by reference)
+    max_points = 15000
+    n_points = embeddings.shape[0]
+    if n_points > max_points:
+        idx = np.random.choice(n_points, max_points, replace=False)
+        embeddings = embeddings[idx].copy()
+        ground_truth = ground_truth[idx].copy()
+
+    tsne = TSNE(n_components=3, random_state=42)
+    emb_3d = tsne.fit_transform(embeddings)
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    scatter = ax.scatter(emb_3d[:, 0], emb_3d[:, 1], emb_3d[:, 2], c=ground_truth, cmap='viridis', alpha=0.7)
+    legend1 = ax.legend(*scatter.legend_elements(), title="Labels")
+    ax.add_artist(legend1)
+    ax.set_title("t-SNE of Embeddings (3D)")
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    ax.set_zlabel("t-SNE 3")
+    plt.show()
+
+    # Instead of showing the plot, return the figure object so it can be saved elsewhere
+    plt.close(fig)  # Close the figure to prevent it from displaying in some environments
+    agg_dict["tsne_visualization"] = fig
+
+    # Compute pairwise cosine distance for all embeddings (no subsampling)
+    all_embeddings = agg_dict["embeddings"].cpu()
+    all_labels = agg_dict["ground_truth"].cpu().numpy()
+    # Use the pairwise_cosine function defined at the top of the file
+    distance_matrix = pairwise_cosine(all_embeddings).cpu().numpy()
+
+    avg_dist_to_1 = []
+    avg_dist_to_0 = []
+    actual_label = []
+
+    for i in range(distance_matrix.shape[0]):
+        label_i = all_labels[i]
+        # Indices for label 1 and label 0 (excluding self)
+        idx_1 = np.where((all_labels == 1) & (np.arange(len(all_labels)) != i))[0]
+        idx_0 = np.where((all_labels == 0) & (np.arange(len(all_labels)) != i))[0]
+        # Average distances
+        avg1 = np.mean(distance_matrix[i, idx_1]) if len(idx_1) > 0 else np.nan
+        avg0 = np.mean(distance_matrix[i, idx_0]) if len(idx_0) > 0 else np.nan
+        avg_dist_to_1.append(avg1)
+        avg_dist_to_0.append(avg0)
+        actual_label.append(label_i)
+
+    df = pd.DataFrame({
+        "avg_dist_to_1": avg_dist_to_1,
+        "avg_dist_to_0": avg_dist_to_0,
+        "actual_label": actual_label,
+        "indices": np.array(dataset.indices)
+    })
+    
+    # Overlay histograms of avg_dist_to_1 and avg_dist_to_0 for label 0 and label 1 separately
+
+    # Subset for label 0
+    df_0 = df[df["actual_label"] == 0]
+    # Subset for label 1
+    df_1 = df[df["actual_label"] == 1]
+
+    # Plot for label 0: overlay avg_dist_to_1 and avg_dist_to_0
+    fig0, ax0 = plt.subplots(figsize=(7, 5))
+    ax0.hist(df_0["avg_dist_to_1"].dropna(), bins=30, alpha=0.6, color='gray', label='Avg Dist to negatives')
+    ax0.hist(df_0["avg_dist_to_0"].dropna(), bins=30, alpha=0.6, color='green', label='Avg Dist to positives')
+    ax0.set_title("Positives: Avg Dist to negative and positives (Overlayed)")
+    ax0.set_xlabel("Average Distance")
+    ax0.set_ylabel("Frequency")
+    ax0.legend()
+    plt.tight_layout()
+
+    agg_dict["hist_overlay_avg_dist_label0"] = fig0
+    plt.close(fig0)
+
+    # Plot for label 1: overlay avg_dist_to_1 and avg_dist_to_0
+    fig1, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.hist(df_1["avg_dist_to_1"].dropna(), bins=30, alpha=0.6, color='gray', label='Avg Dist to negatives')
+    ax1.hist(df_1["avg_dist_to_0"].dropna(), bins=30, alpha=0.6, color='green', label='Avg Dist to positives')
+    ax1.set_title("Negatives: Avg Dist to negatives and positives (Overlayed)")
+    ax1.set_xlabel("Average Distance")
+    ax1.set_ylabel("Frequency")
+    ax1.legend()
+    plt.tight_layout()
+    agg_dict["hist_overlay_avg_dist_label1"] = fig1
+    plt.close(fig1)
+    agg_dict["pairwise_distance_df"] = df
+
+    return agg_dict
+
+
+import yaml
+
+# Example config.yaml:
+# ---
+# root_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+# dataset_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
+# save_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/one_shot/"
+# weights_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/final_model.pt"
+
+# Load configuration from YAML file
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
+
+root_path = config["root_path"]
+dataset_path = config["dataset_path"]
+save_path = config["save_path"]
+weights_path = config["weights_path"]
+
+# Old code (now replaced by YAML config):
+# root_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+# dataset_path = f"{root_path}/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
+# save_path = f"{root_path}/pretraining/triplet_loss_backbones/one_shot/" 
+# weights_path = f"{root_path}/pretraining/triplet_loss_backbones/final_model.pt"
+
+ref_seq = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
+
+plm_name = "esm2_t12_35M_UR50D"
+train_indices_func = lambda sdf: get_indices(sdf, [1, 2, 3], nmuts_column="num_muts")
+test_indices_func = lambda sdf: get_indices(sdf, [1, 2, 3], nmuts_column="num_muts", rev=True)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = plmTrunkModel(
+    plm_name=plm_name,
+    opmode="mean",
+    specific_pos=None,
+    hidden_layers=[1024],
+    activation="sigmoid",
+    layer_norm=False,
+    activation_on_last_layer=False,
+    device=device
+).to(device)
+
+# Load weights for plm backbone only
+backbone_weights = torch.load(weights_path, map_location=device)
+backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
+model.plm.load_state_dict(backbone_weights, strict=True)
+
+train_test_dataset = EpiNNetActivityTrainTest(
+    train_project_name="triplet_training",
+    evaluation_path=save_path,
+    dataset_path=dataset_path,
+    train_indices=train_indices_func,
+    test_indices=test_indices_func,
+    encoding_function=model.encode,
+    encoding_identifier=plm_name,
+    cache=True,
+    lazy_load=True,
+    sequence_column_name='full_seq',
+    activity_column_name='inactive',
+    ref_seq=ref_seq,
+    labels_dtype=torch.float32,
+    device=device
 )
+
+#Train
+model = \
+    train_plm_trunk(
+        plm_name=plm_name,
+        save_path=save_path,
+        train_test_dataset=train_test_dataset,
+        device=device,
+        model=model 
+        lr=1e-4,
+    )
+
+# train_test_dataset.evaluate(model,
+#                             embeddings_evaluate_function, 
+#                             embeddings_finalize_function,
+#                             eval_test=False)
+
+
+# EPINNET DATASET:
+
+    # print("Preparing dataset...")
+    # train_test_dataset = EpiNNetActivityTrainTest(train_project_name="triplet_training",
+    #                                               evaluation_path="",
+    #                                               dataset_path=dataset_path,
+    #                                               train_indices=train_indices_func,
+    #                                               test_indices=test_indices_func,
+    #                                               encoding_function=None,
+    #                                               encoding_identifier=None,
+    #                                               external_encoding=encodings,
+    #                                               cache=True,
+    #                                               lazy_load=True,
+    #                                               sequence_column_name='full_seq',
+    #                                               activity_column_name='inactive',
+    #                                               ref_seq=ref_seq,
+    #                                               labels_dtype=torch.float32,
+    #                                               device=device)
+
+
+
+    
