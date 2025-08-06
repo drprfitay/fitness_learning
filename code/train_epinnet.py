@@ -731,141 +731,6 @@ def train_plm_triplet_model(
     return model
 
 
-def train_plm_trunk(
-    plm_name: str,
-    save_path: str,
-    train_test_dataset,
-    pos_to_use=None,
-    batch_size=32,
-    iterations=20000,
-    margin=1.0,
-    lr=1e-7,
-    weight_decay=0.1,
-    encoding_identifier=None,
-    opmode="mean",
-    hidden_layers=[1024],
-    activation="sigmoid",
-    layer_norm=False,
-    activation_on_last_layer=False,
-    device=torch.device("cpu"),
-    model=None  
-):
-    torch.cuda.empty_cache()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-    if model is None:
-        model = plmTrunkModel(
-            plm_name=plm_name,
-            opmode=opmode,
-            specific_pos=pos_to_use,
-            hidden_layers=hidden_layers,
-            activation=activation,
-            layer_norm=layer_norm,
-            activation_on_last_layer=activation_on_last_layer,
-            device=device
-        ).to(device)
-    else:
-        model = model.to(device)
-
-    if train_test_dataset is None:
-        raise ValueError("train_test_dataset must be provided as an argument.")
-
-    if pos_to_use is None:
-        pos_to_use = [int(x[1:]) for x in train_test_dataset.train_dataset.sequence_dataframe.columns[3:25].tolist()]
-
-    print(f"Using positions: {pos_to_use}")
-
-    # One-hot encode labels for training
-    train_test_dataset.train_dataset.labels = torch.nn.functional.one_hot(
-        train_test_dataset.train_dataset.labels.to(torch.long), 2
-    ).to(torch.float)
-
-    train_loader = torch.utils.data.DataLoader(train_test_dataset, batch_size=batch_size, shuffle=True)
-    n_epochs = ceil(iterations / len(train_loader))
-
-    optimizer = torch.optim.Adam(model.epinnet_trunk.parameters(), lr=lr, weight_decay=weight_decay)
-    ce_loss_fn = torch.nn.CrossEntropyLoss()
-    
-    model.train()
-    avg_loss = torch.tensor([]).to(device)
-    
-    total_steps = 0
-    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
-
-    # Freeze gradients for plm
-    for p in model.plm.parameters():
-        p.requires_grad = False
-
-    for epoch in range(n_epochs):
-        epoch_loss = torch.tensor(0.0).to(device)
-        iter_20b_loss = torch.tensor(0.0).to(device)
-        for step, batch in enumerate(train_loader):
-            x = batch[0].to(device)
-            y = batch[1].to(device)
-
-            optimizer.zero_grad()
-
-            hh = model(x)
-
-            emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
-            emb = torch.nn.functional.normalize(emb, dim=1)
-
-            #visualize_batch
-            # Add labels to the heatmap
-            sorted_indices = np.argsort(y.argmax(dim=1).cpu().numpy())
-            sorted_labels = y.argmax(dim=1).cpu().numpy()[sorted_indices]
-            heatmap_data = pairwise_cosine(emb)[sorted_indices, :][:, sorted_indices].cpu().numpy()
-            ax = sns.heatmap(
-                heatmap_data,
-                xticklabels=sorted_labels,
-                yticklabels=sorted_labels
-            )
-            ax.set_xlabel("Sample (sorted by label)")
-            ax.set_ylabel("Sample (sorted by label)")
-            ax.set_title("Pairwise Cosine Similarity Heatmap (sorted by label)")
-            plt.draw()
-            plt.pause(0.001)
-            plt.close()
-
-
-            y_pred = model.epinnet_trunk(emb)
-            total_loss = ce_loss_fn(y_pred, y)
-
-            epoch_loss += total_loss.item()
-            iter_20b_loss += total_loss.item()
-
-            total_loss.backward()        
-            optimizer.step()
-
-            total_steps += 1
-            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
-
-            if (step + 1) % 20 == 0:
-                total_steps += 1
-                iter_20b_loss = iter_20b_loss /  20
-                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
-                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
-                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
-                plt.show()
-                print(y_pred.softmax(dim=1).argmax(dim=1))
-            print("[E%d I%d] %.3f"  % (epoch, step, total_loss))
-            if total_steps % 1000 == 0:
-                print("\t\tCheckpoint [%d]" % total_steps)
-                torch.save(model.state_dict(), save_path + "checkpoint_model_%d.pt" % total_steps)
-                torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
-                torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
-                torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
-        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
-    torch.save(model.state_dict(), save_path + "final_model.pt")
-    torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
-    torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
-    torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
-    print(f"Model saved to {save_path}")
-    return model
-
-
 def train_epinnet(
     train_test_dataset,
     save_path: str,
@@ -1221,21 +1086,21 @@ train_test_dataset = EpiNNetActivityTrainTest(
     device=device
 )
 
-#Train
-model = \
-    train_plm_trunk(
-        plm_name=plm_name,
-        save_path=save_path,
-        train_test_dataset=train_test_dataset,
-        device=device,
-        model=model, 
-        lr=1e-6,
-    )
+# #Train
+# model = \
+#     train_plm_trunk(
+#         plm_name=plm_name,
+#         save_path=save_path,
+#         train_test_dataset=train_test_dataset,
+#         device=device,
+#         model=model, 
+#         lr=1e-6,
+#     )
 
-# train_test_dataset.evaluate(model,
-#                             embeddings_evaluate_function, 
-#                             embeddings_finalize_function,
-#                             eval_test=False)
+train_test_dataset.evaluate(model,
+                            embeddings_evaluate_function, 
+                            embeddings_finalize_function,
+                            eval_train=False)
 
 
 # EPINNET DATASET:
