@@ -612,6 +612,9 @@ class EpiNNetActivityTrainTest(Dataset):
 
                 for key, value in evaluated_data_to_save.items():
                     filename = f"{key}"
+                    # INSERT_YOUR_CODE
+                    print(f"Saving {key} to {os.path.join(prefix_folder, filename)} (type: {type(value)})")
+                    
                     # Create the prefix folder within evaluation_path                    
                     # Save matplotlib figure
                     if hasattr(value, "savefig"):
@@ -1077,10 +1080,11 @@ model = plmTrunkModel(
     device=device
 ).to(device)
 
-# Load weights for plm backbone only
-backbone_weights = torch.load(weights_path, map_location=device)
-backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
-model.plm.load_state_dict(backbone_weights, strict=True)
+# Load weights for plm backbone only if config has load_weights set to True
+if "load_weights" in config and config["load_weights"]:
+    backbone_weights = torch.load(weights_path, map_location=device)
+    backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
+    model.plm.load_state_dict(backbone_weights, strict=True)
 
 train_test_dataset = EpiNNetActivityTrainTest(
     train_project_name="triplet_training",
