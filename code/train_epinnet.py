@@ -559,8 +559,8 @@ class EpiNNetActivityTrainTest(Dataset):
 
             if eval_test:
                 confs.append({"train": False,
-                              "path_prefix": "test",
-                              "subsample": "subsample.csv"})            
+                              "path_prefix": "test"})
+                              #"subsample": "subsample.csv"})            
 
             for conf in confs:
                 is_train = conf["train"]
@@ -589,6 +589,9 @@ class EpiNNetActivityTrainTest(Dataset):
                      torch.utils.data.DataLoader(working_dataset, batch_size=internal_batch_size, shuffle=False)
 
                 aggregated_evaluated_data = {}
+                
+                num_sequences = len(working_dataset)
+                print(f"About to evaluate {num_sequences} sequences on {'train' if is_train else 'test'} set.")
 
                 for idx, data in enumerate(dataloader):
                     aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data, self.device)
@@ -612,9 +615,9 @@ class EpiNNetActivityTrainTest(Dataset):
 
                 for key, value in evaluated_data_to_save.items():
                     filename = f"{key}"
-                    # INSERT_YOUR_CODE
+
                     print(f"Saving {key} to {os.path.join(prefix_folder, filename)} (type: {type(value)})")
-                    
+
                     # Create the prefix folder within evaluation_path                    
                     # Save matplotlib figure
                     if hasattr(value, "savefig"):
@@ -1065,7 +1068,7 @@ ref_seq = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQ
 
 plm_name = "esm2_t12_35M_UR50D"
 train_indices_func = lambda sdf: get_indices(sdf, [1, 2, 3], nmuts_column="num_muts")
-test_indices_func = lambda sdf: get_indices(sdf, [1, 2, 3], nmuts_column="num_muts", rev=True)
+test_indices_func = lambda sdf: get_indices(sdf, [4], nmuts_column="num_muts")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
