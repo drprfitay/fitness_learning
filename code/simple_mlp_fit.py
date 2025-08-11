@@ -283,6 +283,19 @@ def train_trunk_mlp(base_path, iterations=20000, batch_size=64, lr=1e-4, save_pa
         "predicted_label": predicted_label.numpy()
     })
 
+
+    
+    loss_dict = {
+        "running_batch_loss": running_batch_loss.cpu().numpy(),
+        "running_epoch_loss": running_epoch_loss.cpu().numpy(),
+        "running_20b_loss": running_20b_loss.cpu().numpy()
+    }
+    
+    for loss_name, loss_array in loss_dict.items():
+        loss_path = os.path.join(base_path, f"trunk_mlp_{loss_name}.npy")
+        np.save(loss_path, loss_array)
+        print(f"Saved {loss_name} to {loss_path}")
+
     csv_path = os.path.join(base_path, "trunk_mlp_predictions.csv")
     df_pred.to_csv(csv_path, index=False)
     print(f"Predictions saved to {csv_path}")

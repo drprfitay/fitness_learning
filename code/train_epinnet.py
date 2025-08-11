@@ -696,7 +696,10 @@ def train_plm_triplet_model(
     model=None  
 ):
     torch.cuda.empty_cache()
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    checkpoints_dir = os.path.join(save_path, "checkpoints")
+    os.makedirs(checkpoints_dir, exist_ok=True)
 
     if model is None:
         model = plmTrunkModel(
@@ -772,15 +775,15 @@ def train_plm_triplet_model(
             print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
             if total_steps % 1000 == 0:
                 print("\t\tCheckpoint [%d]" % total_steps)
-                torch.save(model.state_dict(), save_path + "checkpoint_model_%d.pt" % total_steps)
-                torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
-                torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
-                torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
+                torch.save(model.state_dict(), checkpoints_dir + "/checkpoint_model_%d.pt" % total_steps)
+                torch.save(running_batch_loss.cpu().detach(), save_path + "/batch_loss.pt")
+                torch.save(running_epoch_loss.cpu().detach(), save_path + "/epoch_loss.pt")
+                torch.save(running_20b_loss.cpu().detach(), save_path + "/20b_loss.pt")
         running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
-    torch.save(model.state_dict(), save_path + "final_model.pt")
-    torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
-    torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
-    torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
+    torch.save(model.state_dict(), save_path + "/final_model.pt")
+    torch.save(running_batch_loss.cpu().detach(), save_path + "/batch_loss.pt")
+    torch.save(running_epoch_loss.cpu().detach(), save_path + "/epoch_loss.pt")
+    torch.save(running_20b_loss.cpu().detach(), save_path + "/20b_loss.pt")
     print(f"Model saved to {save_path}")
     return model
 
@@ -1123,7 +1126,8 @@ def train_evaluate_plms():
         rev=config["test_indices_rev"]
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
+    print(f"ֿ\t\t[INFO] Using device: {device}")
 
     model = plmTrunkModel(
         plm_name=plm_name,
@@ -1171,7 +1175,7 @@ def train_evaluate_plms():
                 pos_to_use=config["pos_to_use"],
                 batch_size=config["batch_size"],
                 iterations=config["iterations"],
-                lr=config["lr"],
+                lr=float(config["lr"]),
                 device=device,
                 model=model, 
             )
