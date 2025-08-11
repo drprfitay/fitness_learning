@@ -11,6 +11,7 @@ import sys, os
 import torch
 from torch.cpu import device_count
 import torch.nn.functional as F
+from torch.utils.data import Subset
 import loralib as lora
 import scipy.stats
 import matplotlib.pyplot as plt
@@ -46,22 +47,64 @@ import yaml
 # save_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/one_shot/"
 # weights_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/final_model.pt"
 
+parser = argparse.ArgumentParser(description="Train and evaluate EpiNNet or PLM models.")
+parser.add_argument("--config",type=str,default="config.yaml",help="Path to the YAML configuration file (default: config.yaml)")
+parser.add_argument("--root_path", type=str, help="Root path for the project")
+parser.add_argument("--dataset_path", type=str, help="Path to the dataset CSV file")
+parser.add_argument("--save_path", type=str, help="Path to save outputs")
+parser.add_argument("--weights_path", type=str, help="Path to model weights")
+parser.add_argument("--model_type", type=str, help="Type of model to use (e.g., 'plm', 'epinnet')")
+parser.add_argument("--nmuts_column", type=str, help="Column name for number of mutations")
+parser.add_argument("--sequence_column_name", type=str, help="Column name for sequence")
+parser.add_argument("--activity_column_name", type=str, help="Column name for activity")
+parser.add_argument("--first_column_name", type=str, help="First column name for encoding")
+parser.add_argument("--last_column_name", type=str, help="Last column name for encoding")
+parser.add_argument("--plm_name", type=str, help="PLM model name")
+parser.add_argument("--ref_seq", type=str, help="Reference sequence")
+parser.add_argument("--train_indices", type=int, nargs='+', help="List of train indices")
+parser.add_argument("--test_indices", type=int, nargs='+', help="List of test indices")
+parser.add_argument("--pos_to_use", type=int, nargs='+', help="List of positions to use")
+parser.add_argument("--load_weights", type=lambda x: (str(x).lower() == 'true'), help="Whether to load weights (True/False)")
+parser.add_argument("--train", type=lambda x: (str(x).lower() == 'true'), help="Whether to train (True/False)")
+parser.add_argument("--train_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse train indices (True/False)")
+parser.add_argument("--test_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse test indices (True/False)")
+parser.add_argument("--evaluate_train", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on train set (True/False)")
+parser.add_argument("--evaluate_test", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on test set (True/False)")
+# INSERT_YOUR_COD
+parser.add_argument("--train_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during training (True/False)")
+parser.add_argument("--inference_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during inference (True/False)")
+parser.add_argument("--lr", type=float, help="Learning rate")
+parser.add_argument("--batch_size", type=int, help="Batch size")
+parser.add_argument("--iterations", type=int, help="Number of iterations")
+
+# After loading config, overwrite config values with any provided CLI args
+
+args = parser.parse_args()
+config_path = args.config
+
+#config_path = "epinnet_config.yaml"
 # Load configuration from YAML file
-with open("config.yaml", "r") as f:
+with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
-root_path = config["root_path"]
-dataset_path = config["dataset_path"]
-save_path = config["save_path"]
-weights_path = config["weights_path"]
+# Overwrite config values with any provided CLI args (if not None), dynamically
+for key, val in vars(args).items():
+    if key == "config":
+        continue  # skip config path itself
+
+    if val is not None:
+        config[key] = val
 
 
-ROOT_PATH = root_path
-ROOT_DMS_PATH = "%s/data/datasets/DMS/Data" % ROOT_PATH
-BASE_DMS_PATH = "%s/data/" % ROOT_DMS_PATH
-BASE_DMS_PDB_PATH = "%s/structure_data/" % ROOT_DMS_PATH 
+if "root_path" in config:
+    for k in list(config.keys()):
+        if k.endswith("_path") and k != "root_path" and config[k] is not None:
+            # Only update if not already an absolute path
+            if not os.path.isabs(str(config[k])):
+                config[k] = os.path.join(config["root_path"], str(config[k]))
 
-plm_init(ROOT_PATH)
+
+plm_init(config["root_path"])
 
 def pairwise_cosine(X):
     X = F.normalize(X, dim=-1)
@@ -231,7 +274,6 @@ class SeqMLP(torch.nn.Module):
     def encode(self, *args):
         return self.encode_int(*args)
         
-
 
 def select_design_pos(seq):
     return([seq[21], seq[23], seq[24]])
@@ -573,14 +615,18 @@ class EpiNNetActivityTrainTest(Dataset):
                     print("Evaluating test dataset")
                     self.lazy_load_func()
                     working_dataset = self.test_dataset
+                
+                indices_to_save = torch.tensor(working_dataset.indices)
 
                 if "subsample" in conf:
-                    from torch.utils.data import Subset
+                    
                     subsample_path = conf["subsample"]
                     subsample_df = pd.read_csv(subsample_path)
+
                     if "indices" in subsample_df.columns:
                         print(f"Sampling dataset from size {len(working_dataset)} to size {len(subsample_df['indices'])}")
                         subsample_indices = subsample_df["indices"].tolist()
+                        indices_to_save = torch.tensor(working_dataset.indices)[subsample_indices] # original df indices - subset based on subsample indices
                         working_dataset = Subset(working_dataset, subsample_indices)
                     else:
                         print(f"Warning: 'indices' column not found in {subsample_path}")
@@ -596,19 +642,8 @@ class EpiNNetActivityTrainTest(Dataset):
                 for idx, data in enumerate(dataloader):
                     aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data, self.device)
                     
-                    if "trip_loss" in aggregated_evaluated_data and (idx + 1) % 20 == 0:
-                        print("Iter %d [%.3f]" % (idx, idx/len(dataloader)))
-                        trip_loss_data = aggregated_evaluated_data["trip_loss"].cpu().numpy() if hasattr(aggregated_evaluated_data["trip_loss"], "cpu") else aggregated_evaluated_data["trip_loss"]
-                        plt.figure()
-                        plt.hist(trip_loss_data, bins=30)
-                        plt.title(f"Triplet Loss Histogram at batch {idx+1}")
-                        plt.xlabel("Triplet Loss")
-                        plt.ylabel("Frequency")
-                        plt.draw()
-                        plt.pause(0.001)
-                        plt.close()
-                                    
                 evaluated_data_to_save = finalize_func(aggregated_evaluated_data, working_dataset)
+                evaluated_data_to_save["indices"] = indices_to_save
 
                 prefix_folder = os.path.join(self.evaluation_path, path_prefix)
                 os.makedirs(prefix_folder, exist_ok=True)
@@ -616,7 +651,7 @@ class EpiNNetActivityTrainTest(Dataset):
                 for key, value in evaluated_data_to_save.items():
                     filename = f"{key}"
 
-                    print(f"Saving {key} to {os.path.join(prefix_folder, filename)} (type: {type(value)})")
+                    print(f"\t\tSaving {key} to {os.path.join(prefix_folder, filename)} (type: {type(value)})")
 
                     # Create the prefix folder within evaluation_path                    
                     # Save matplotlib figure
@@ -757,7 +792,7 @@ def train_epinnet(
     model=None,
     batch_size=32,
     iterations=20000,                  
-    lr=1e-7,
+    lr=1e-4,
     weight_decay=0.1,
     hidden_layers=[1024],
     activation="sigmoid",
@@ -822,8 +857,10 @@ def train_epinnet(
                 iter_20b_loss = iter_20b_loss / 20
                 running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
                 iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
-                plt.plot(range(1, total_steps + 1), running_20b_loss.cpu().detach().numpy())
-                plt.show()
+                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
+                plt.draw()
+                plt.pause(0.001)
+                plt.close()
                 
             print("[E%d I%d] %.3f" % (epoch, step, total_loss))
         running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
@@ -853,8 +890,12 @@ def train_epinnet(
     #         test_score = torch.cat([test_score, y_pred.softmax(dim=1)[:,0].cpu().detach()])
             
     # Save model
+    
+    # REVERT BACK LABELS
+    train_test_dataset.train_dataset.labels = train_test_dataset.train_dataset.labels.argmax(dim=1)
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    torch.save(model.state_dict(), save_path + "/model.pt")
+    torch.save(model.state_dict(), save_path + "/final_model.pt")
     torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
     torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
     torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
@@ -862,31 +903,34 @@ def train_epinnet(
     return model
 
 @torch.no_grad()
-def epinnt_evaluate_function(model, data, aggregated_evaluated_data, device=torch.device("cpu")):
+def epinnet_evaluate_function(model, data, aggregated_evaluated_data, device=torch.device("cpu")):
     x = data[0].to(device)
     y = data[1].to(device)
+    y = torch.nn.functional.one_hot(
+       y.to(torch.long), 2
+    ).to(torch.float)
     y_pred = model(x)
     ce_loss_fn = torch.nn.CrossEntropyLoss()
     batch_loss = ce_loss_fn(y_pred, y)
 
     # Accumulate predictions, scores, true labels, and loss
-    if "test_pred" not in aggregated_evaluated_data:
-        aggregated_evaluated_data["test_pred"] = torch.tensor([], dtype=torch.long)
-    if "test_score" not in aggregated_evaluated_data:
-        aggregated_evaluated_data["test_score"] = torch.tensor([], dtype=torch.float)
-    if "true_labels" not in aggregated_evaluated_data:
-        aggregated_evaluated_data["true_labels"] = torch.tensor([], dtype=torch.long)
+    if "pred_label" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["pred_label"] = torch.tensor([], dtype=torch.long)
+    if "active_prob" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["active_prob"] = torch.tensor([], dtype=torch.float)
+    if "true_label" not in aggregated_evaluated_data:
+        aggregated_evaluated_data["true_label"] = torch.tensor([], dtype=torch.long)
     if "loss" not in aggregated_evaluated_data:
         aggregated_evaluated_data["loss"] = torch.tensor([], dtype=torch.float)
 
-    aggregated_evaluated_data["test_pred"] = torch.cat(
-        [aggregated_evaluated_data["test_pred"], y_pred.argmax(dim=1).cpu().detach()], dim=0
+    aggregated_evaluated_data["pred_label"] = torch.cat(
+        [aggregated_evaluated_data["pred_label"], y_pred.argmax(dim=1).cpu().detach()], dim=0
     )
-    aggregated_evaluated_data["test_score"] = torch.cat(
-        [aggregated_evaluated_data["test_score"], y_pred.softmax(dim=1)[:, 0].cpu().detach()]
+    aggregated_evaluated_data["active_prob"] = torch.cat(
+        [aggregated_evaluated_data["active_prob"], y_pred.softmax(dim=1)[:, 0].cpu().detach()]
     )
-    aggregated_evaluated_data["true_labels"] = torch.cat(
-        [aggregated_evaluated_data["true_labels"], y.argmax(dim=1).cpu().detach()]
+    aggregated_evaluated_data["true_label"] = torch.cat(
+        [aggregated_evaluated_data["true_label"], y.argmax(dim=1).cpu().detach()]
     )
     aggregated_evaluated_data["loss"] = torch.cat(
         [aggregated_evaluated_data["loss"], batch_loss.detach().reshape(-1).cpu()]
@@ -895,42 +939,33 @@ def epinnt_evaluate_function(model, data, aggregated_evaluated_data, device=torc
     return aggregated_evaluated_data
 
 @torch.no_grad()
-def epinnt_finalize_function(aggregated_evaluated_data, dataset):
+def epinnet_finalize_function(aggregated_evaluated_data, dataset):
     # Restore original finalize logic
-    true_labels = aggregated_evaluated_data["true_labels"].cpu().detach().numpy()
-    test_score = aggregated_evaluated_data["test_score"].cpu().detach().numpy()
-    test_pred = aggregated_evaluated_data["test_pred"].cpu().detach().numpy()
-    order = np.argsort(-test_score)
-
-    top_2000 = test_score[order[1:200]]
-    top_2000_labels = true_labels[order[1:200]]
-
-    act = top_2000[top_2000_labels == 0]
-    inact = top_2000[top_2000_labels == 1]
+    true_label = aggregated_evaluated_data["true_label"].cpu().detach()
+    active_prob = aggregated_evaluated_data["active_prob"].cpu().detach()
+    pred_label = aggregated_evaluated_data["pred_label"].cpu().detach()
 
     evaluated_df = pd.DataFrame({
-        "Score": test_score,
-        "GT": true_labels,
-        "Pred": test_pred,
-        "Indices": train_test_dataset.test_dataset.indices
+        "Score": active_prob,
+        "GT": true_label,
+        "Pred": pred_label,
+        "Indices": dataset.indices
     })
 
-    evaluated_df.to_csv(save_path + "/eval.csv", index=False)
-    print(f"Model saved to {save_path}")
+    #top_K_df = pd.DataFrame(dict([("%d" % K, np.unique(true_label[np.argsort(-active_prob)[0:K]], return_counts=True)[1]) for K in [5,10,50,100,500,1000,5000]]))
 
     return {
         "evaluated_df": evaluated_df,
-        "test_score": test_score,
-        "test_pred": test_pred,
-        "true_labels": true_labels,
-        "act": act,
-        "inact": inact
+        "predicted_score": active_prob,
+        "predicted_label": pred_label,
+        "true_label": true_label,
+        #"top_K_df": top_K_df,
     }
 
 @torch.no_grad
 def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu")):
     margin = 1
-    pos_to_use = [42, 44, 61, 65, 68, 69, 72, 94, 108, 112, 121, 145, 148, 150, 167, 181, 185, 203, 205, 220, 222, 224]
+    pos_to_use = config["pos_to_use"]
     x = data[0].to(device)
     y = data[1].to(device)
 
@@ -1063,85 +1098,182 @@ def embeddings_finalize_function(agg_dict, dataset):
 # dataset_path = f"{root_path}/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
 # save_path = f"{root_path}/pretraining/triplet_loss_backbones/one_shot/" 
 # weights_path = f"{root_path}/pretraining/triplet_loss_backbones/final_model.pt"
+def train_evaluate_plms():
+    ref_seq = config["ref_seq"]
 
-ref_seq = "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
+    # Check if "plm_name" exists in config, else use default "esm2_t12_35M_UR50D"
+    if "plm_name" in config and config["plm_name"]:
+        plm_name = config["plm_name"]
+    else:
+        print("Warning: 'plm_name' not found in config. Using default 'esm2_t12_35M_UR50D'.")
+        plm_name = "esm2_t12_35M_UR50D"
 
-plm_name = "esm2_t12_35M_UR50D"
-train_indices_func = lambda sdf: get_indices(sdf, [1, 2, 3], nmuts_column="num_muts")
-test_indices_func = lambda sdf: get_indices(sdf, [4], nmuts_column="num_muts")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_indices_func = lambda sdf: get_indices(
+        sdf, 
+        config["train_indices"], 
+        nmuts_column=config["nmuts_column"],
+        rev=config["train_indices_rev"]
+    )
 
-model = plmTrunkModel(
-    plm_name=plm_name,
-    opmode="mean",
-    specific_pos=None,
-    hidden_layers=[4096,4096],
-    activation="sigmoid",
-    layer_norm=False,
-    activation_on_last_layer=False,
-    device=device
-).to(device)
+    test_indices_func = lambda sdf: get_indices(
+        sdf, 
+        config["test_indices"], 
+        nmuts_column=config["nmuts_column"],
+        rev=config["test_indices_rev"]
+    )
 
-# Load weights for plm backbone only if config has load_weights set to True
-if "load_weights" in config and config["load_weights"]:
-    backbone_weights = torch.load(weights_path, map_location=device)
-    backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
-    model.plm.load_state_dict(backbone_weights, strict=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-train_test_dataset = EpiNNetActivityTrainTest(
-    train_project_name="triplet_training",
-    evaluation_path=save_path,
-    dataset_path=dataset_path,
-    train_indices=train_indices_func,
-    test_indices=test_indices_func,
-    encoding_function=model.encode,
-    encoding_identifier=plm_name,
-    cache=True,
-    lazy_load=True,
-    sequence_column_name='full_seq',
-    activity_column_name='inactive',
-    ref_seq=ref_seq,
-    labels_dtype=torch.float32,
-    device=device
-)
+    model = plmTrunkModel(
+        plm_name=plm_name,
+        opmode="mean",
+        specific_pos=None,
+        hidden_layers=[4096,4096],
+        activation="sigmoid",
+        layer_norm=False,
+        activation_on_last_layer=False,
+        device=device
+    ).to(device)
 
-# #Train
-# model = \
-#     train_plm_trunk(
-#         plm_name=plm_name,
-#         save_path=save_path,
-#         train_test_dataset=train_test_dataset,
-#         device=device,
-#         model=model, 
-#         lr=1e-6,
-#     )
+    # Load weights for plm backbone only if config has load_weights set to True
+    if "load_weights" in config and config["load_weights"]:
+        backbone_weights = torch.load(config["weights_path"], map_location=device)
+        backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
+        model.plm.load_state_dict(backbone_weights, strict=True)
 
-train_test_dataset.evaluate(model,
-                            embeddings_evaluate_function, 
-                            embeddings_finalize_function,
-                            eval_train=False)
+    train_test_dataset = EpiNNetActivityTrainTest(
+        train_project_name="triplet_training",
+        evaluation_path=config["save_path"],
+        dataset_path=config["dataset_path"],
+        train_indices=train_indices_func,
+        test_indices=test_indices_func,
+        encoding_function=model.encode,
+        encoding_identifier=plm_name,
+        cache=True,
+        lazy_load=True,
+        sequence_column_name=config["sequence_column_name"],
+        activity_column_name=config["activity_column_name"],
+        ref_seq=ref_seq,
+        labels_dtype=torch.float32,
+        device=device
+    )
 
+    if config["train"]:
+
+        model.plm.token_dropout = config["train_drop_tokens"]
+        
+        model = \
+            train_plm_triplet_model(
+                plm_name=plm_name,
+                save_path=config["save_path"],
+                train_test_dataset=train_test_dataset,
+                pos_to_use=config["pos_to_use"],
+                batch_size=config["batch_size"],
+                iterations=config["iterations"],
+                lr=config["lr"],
+                device=device,
+                model=model, 
+            )
+
+    model.plm.token_dropout = config["inference_drop_tokens"]
+
+    train_test_dataset.evaluate(model,
+                                embeddings_evaluate_function, 
+                                embeddings_finalize_function,
+                                eval_train=config["evaluate_train"],
+                                eval_test=config["evaluate_test"])
 
 # EPINNET DATASET:
 
-    # print("Preparing dataset...")
-    # train_test_dataset = EpiNNetActivityTrainTest(train_project_name="triplet_training",
-    #                                               evaluation_path="",
-    #                                               dataset_path=dataset_path,
-    #                                               train_indices=train_indices_func,
-    #                                               test_indices=test_indices_func,
-    #                                               encoding_function=None,
-    #                                               encoding_identifier=None,
-    #                                               external_encoding=encodings,
-    #                                               cache=True,
-    #                                               lazy_load=True,
-    #                                               sequence_column_name='full_seq',
-    #                                               activity_column_name='inactive',
-    #                                               ref_seq=ref_seq,
-    #                                               labels_dtype=torch.float32,
-    #                                               device=device)
 
 
 
+def train_evaluate_epinnet():
+
+    # Define train/test split functions
+    train_indices_func = lambda sdf: get_indices(
+        sdf, 
+        config["train_indices"], 
+        nmuts_column=config["nmuts_column"],
+        rev=config["train_indices_rev"]
+    )
     
+    test_indices_func = lambda sdf: get_indices(
+        sdf, 
+        config["test_indices"], 
+        nmuts_column=config["nmuts_column"],
+        rev=config["test_indices_rev"]
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load the sequence dataframe and create encodings
+    sequence_df = pd.read_csv(config["dataset_path"])
+    encodings = torch.tensor(get_one_hot_encoding(sequence_df, config["first_column_name"], config["last_column_name"]), dtype=torch.float)
+
+    # Initialize EpiNNet model
+    epinnet_model = EpiNNet(
+        d_in=encodings.shape[1],  # Example input dimension, adjust as needed
+        hidden_layers=[512, 256],  # Example hidden layers, adjust as needed
+        d_out=2,  # Example output dimension for binary classification
+        activation="relu",
+        device=device
+    ).to(device)
+    
+    
+
+    if "load_weights" in config and config["load_weights"]:
+        backbone_weights = torch.load(config["weights_path"], map_location=device)
+        epinnet_model.load_state_dict(backbone_weights)
+
+    train_test_dataset = EpiNNetActivityTrainTest(
+        train_project_name="triplet_training",
+        evaluation_path=config["save_path"],
+        dataset_path=config["dataset_path"],
+        train_indices=train_indices_func,
+        test_indices=test_indices_func,
+        encoding_function=None,
+        encoding_identifier=None,
+        external_encoding=encodings,
+        cache=True,
+        lazy_load=True,
+        sequence_column_name='full_seq',
+        activity_column_name='inactive',
+        ref_seq=config["ref_seq"],
+        labels_dtype=torch.float32,
+        device=device
+    )
+
+    if config["train"]:
+
+        epinnet_model =\
+            train_epinnet(
+                train_test_dataset=train_test_dataset,
+                save_path=config["save_path"],
+                encodings=encodings,
+                model=epinnet_model,
+                device=device,
+                lr=float(config["lr"]),
+                iterations=int(config["iterations"]),
+                batch_size=int(config["batch_size"]),
+            )
+
+        
+    train_test_dataset.evaluate(epinnet_model,   
+                                epinnet_evaluate_function,
+                                epinnet_finalize_function,
+                                eval_train=config["evaluate_train"],
+                                eval_test=config["evaluate_test"])
+
+    if config["evaluate_train"] and config["evaluate_test"]:
+        # Train and evaluate simple trunk
+        from simple_mlp_fit import train_trunk_mlp
+        train_trunk_mlp(config["save_path"])
+
+
+
+if config["model_type"] == "plm":
+    train_evaluate_plms()
+elif config["model_type"] == "epinnet":
+    train_evaluate_epinnet()    
