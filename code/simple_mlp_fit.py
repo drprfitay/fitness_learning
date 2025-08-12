@@ -153,7 +153,18 @@ def load_embeddings_and_labels(base_path):
 
 def train_trunk_mlp(base_path, iterations=20000, batch_size=64, lr=1e-4, save_path=None, device=torch.device("cpu")):
 # Turn tensors into a dataset and dataloader
+    print("\n[DEBUG] Training Trunk MLP parameters:")
+    print(f"\tbase_path: {base_path}")
+    print(f"\titerations: {iterations}")
+    print(f"\tbatch_size: {batch_size}")
+    print(f"\tlr: {lr}")
+    print(f"\tsave_path: {save_path}")
+    print(f"\tdevice: {device}")
+
     X_train, y_train, X_test, y_test = load_embeddings_and_labels(base_path)
+    print(f"\tTrain set size: {X_train.shape[0]}")
+    print(f"\tTest set size: {X_test.shape[0]}\n")
+
 
     y_train = torch.nn.functional.one_hot(y_train.to(torch.long), 2).to(torch.float)
     y_test = torch.nn.functional.one_hot(y_test.to(torch.long), 2).to(torch.float)
@@ -280,7 +291,8 @@ def train_trunk_mlp(base_path, iterations=20000, batch_size=64, lr=1e-4, save_pa
     # Create a DataFrame with predicted_score and predicted_label
     df_pred = pd.DataFrame({
         "predicted_score": predicted_score.numpy(),
-        "predicted_label": predicted_label.numpy()
+        "predicted_label": predicted_label.numpy(),
+        "ground_truth_label": y_test.argmax(dim=1).numpy(),
     })
 
 
@@ -290,7 +302,7 @@ def train_trunk_mlp(base_path, iterations=20000, batch_size=64, lr=1e-4, save_pa
         "running_epoch_loss": running_epoch_loss.cpu().numpy(),
         "running_20b_loss": running_20b_loss.cpu().numpy()
     }
-    
+
     for loss_name, loss_array in loss_dict.items():
         loss_path = os.path.join(base_path, f"trunk_mlp_{loss_name}.npy")
         np.save(loss_path, loss_array)

@@ -637,9 +637,13 @@ class EpiNNetActivityTrainTest(Dataset):
                 aggregated_evaluated_data = {}
                 
                 num_sequences = len(working_dataset)
-                print(f"About to evaluate {num_sequences} sequences on {'train' if is_train else 'test'} set.")
-
-                for idx, data in enumerate(dataloader):
+                print(f"[DEBUG] Evaluating on device: {self.device}")
+                print(f"About to evaluate {num_sequences} sequences on {'train' if is_train else 'test'} set.")                
+                
+                for idx, data in enumerate(dataloader):                
+                    if idx % (len(dataloader) // 20) == 0:
+                        print(f"[DEBUG] Progress: {idx}/{len(dataloader)} batches evaluated")
+                        
                     aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data, self.device)
                     
                 evaluated_data_to_save = finalize_func(aggregated_evaluated_data, working_dataset)
@@ -695,6 +699,25 @@ def train_plm_triplet_model(
     device=torch.device("cpu"),
     model=None  
 ):
+
+    print("\n[DEBUG] Training parameters:")
+    print(f"\tplm_name: {plm_name}")
+    print(f"\tsave_path: {save_path}")
+    print("\ttrain_dataset size: %d" % len(train_test_dataset.train_dataset))
+    print(f"\tpos_to_use: {pos_to_use}")
+    print(f"\tbatch_size: {batch_size}")
+    print(f"\titerations: {iterations}")
+    print(f"\tmargin: {margin}")
+    print(f"\tlr: {lr}")
+    print(f"\tweight_decay: {weight_decay}")
+    print(f"\tencoding_identifier: {encoding_identifier}")
+    print(f"\topmode: {opmode}")
+    print(f"\thidden_layers: {hidden_layers}")
+    print(f"\tactivation: {activation}")
+    print(f"\tlayer_norm: {layer_norm}")
+    print(f"\tactivation_on_last_layer: {activation_on_last_layer}")
+    print(f"\tdevice: {device}")
+    print(f"\tmodel: {type(model)}\n")
     torch.cuda.empty_cache()
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -1182,11 +1205,17 @@ def train_evaluate_plms():
 
     model.plm.token_dropout = config["inference_drop_tokens"]
 
-    train_test_dataset.evaluate(model,
-                                embeddings_evaluate_function, 
-                                embeddings_finalize_function,
-                                eval_train=config["evaluate_train"],
-                                eval_test=config["evaluate_test"])
+    if config["evaluate_train"] or config["evaluate_test"]:
+        train_test_dataset.evaluate(model,
+                                    embeddings_evaluate_function, 
+                                    embeddings_finalize_function,
+                                    eval_train=config["evaluate_train"],
+                                    eval_test=config["evaluate_test"])
+
+    if config["evaluate_train"] and config["evaluate_test"]:
+        # Train and evaluate simple trunk
+        from simple_mlp_fit import train_trunk_mlp
+        train_trunk_mlp(config["save_path"])
 
 # EPINNET DATASET:
 
@@ -1264,16 +1293,12 @@ def train_evaluate_epinnet():
             )
 
         
-    train_test_dataset.evaluate(epinnet_model,   
-                                epinnet_evaluate_function,
-                                epinnet_finalize_function,
-                                eval_train=config["evaluate_train"],
-                                eval_test=config["evaluate_test"])
-
-    if config["evaluate_train"] and config["evaluate_test"]:
-        # Train and evaluate simple trunk
-        from simple_mlp_fit import train_trunk_mlp
-        train_trunk_mlp(config["save_path"])
+    if config["evaluate_train"] or config["evaluate_test"]:
+        train_test_dataset.evaluate(epinnet_model,   
+                                    epinnet_evaluate_function,
+                                    epinnet_finalize_function,
+                                    eval_train=config["evaluate_train"],
+                                    eval_test=config["evaluate_test"])
 
 
 
