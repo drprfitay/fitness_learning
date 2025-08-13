@@ -795,6 +795,7 @@ def train_plm_triplet_model(
             for param in layer.parameters():
                 param.requires_grad = (i == len(model.plm.layers) - 1)
 
+
     for epoch in range(n_epochs):
         epoch_loss = torch.tensor(0.0).to(device)
         iter_20b_loss = torch.tensor(0.0).to(device)
@@ -807,20 +808,20 @@ def train_plm_triplet_model(
                 a = model(x)
                 total_loss = ce_loss_fn(a[2], y)
             elif train_type == "triplet":
-            trips = torch.tensor(online_mine_triplets(y))
+                trips = torch.tensor(online_mine_triplets(y))
 
-            if len(trips) <= 0:
-               continue     
-            
+                if len(trips) <= 0:
+                continue     
+                
 
-            hh = model(x)
+                hh = model(x)
 
-            emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
-            emb = torch.nn.functional.normalize(emb, dim=1)
-            emb_trip = emb[trips]
+                emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
+                emb = torch.nn.functional.normalize(emb, dim=1)
+                emb_trip = emb[trips]
 
-            trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
-            total_loss = trip_loss
+                trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
+                total_loss = trip_loss
 
         
             epoch_loss += total_loss.item()
