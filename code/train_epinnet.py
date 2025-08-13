@@ -790,10 +790,11 @@ def train_plm_triplet_model(
     ).to(torch.float)
 
     # Freeze all layers for the plm but the last one
-    if hasattr(model, "plm") and hasattr(model.plm, "layers"):
-        for i, layer in enumerate(model.plm.layers):
-            for param in layer.parameters():
-                param.requires_grad = (i == len(model.plm.layers) - 1)
+    if train_type == "direct_mlp":
+        if hasattr(model, "plm") and hasattr(model.plm, "layers"):
+            for i, layer in enumerate(model.plm.layers):
+                for param in layer.parameters():
+                    param.requires_grad = (i == len(model.plm.layers) - 1)
 
 
     for epoch in range(n_epochs):
