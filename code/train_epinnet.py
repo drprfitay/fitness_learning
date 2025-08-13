@@ -789,6 +789,12 @@ def train_plm_triplet_model(
         train_test_dataset.train_dataset.labels.to(torch.long), 2
     ).to(torch.float)
 
+    # Freeze all layers for the plm but the last one
+    if hasattr(model, "plm") and hasattr(model.plm, "layers"):
+        for i, layer in enumerate(model.plm.layers):
+            for param in layer.parameters():
+                param.requires_grad = (i == len(model.plm.layers) - 1)
+                
     for epoch in range(n_epochs):
         epoch_loss = torch.tensor(0.0).to(device)
         iter_20b_loss = torch.tensor(0.0).to(device)
@@ -829,6 +835,7 @@ def train_plm_triplet_model(
                 plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
                 plt.show()
             #print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
+            print(torch.unique(a[2].softmax(dim=1).argmax(dim=1), return_counts=True))
             print("[E%d I%d] %.3f " % (epoch, step, total_loss))
             if total_steps % 1000 == 0:
                 print("\t\tCheckpoint [%d]" % total_steps)
