@@ -49,14 +49,14 @@ class PlmWrapper():
                  get_embeddings_func=None,
                  get_n_layers_func=None,
                  get_token_vocab_dim_func=None,
-                 get_forward_func=None):
+                 forward_func=None):
         
             self.get_model_func = get_model_func if get_model_func is not None else self.unimplemented
             self.get_embeddings_func = get_embeddings_func if get_embeddings_func is not None else self.unimplemented
             self.get_n_layers_func = get_n_layers_func if get_n_layers_func is not None else self.unimplemented
             self.get_tokenizer_func = get_tokenizer_func if get_tokenizer_func is not None else self.unimplemented
             self.get_token_vocab_dim_func = get_token_vocab_dim_func if get_token_vocab_dim_func is not None else self.unimplemented
-            self.get_forward_func = get_forward_func if get_forward_func is not None else self.unimplemented
+            self.forward_func = forward_func if forward_func is not None else self.unimplemented
             
             
 
@@ -76,7 +76,7 @@ class PlmWrapper():
         return self.get_token_vocab_dim_func()
     
     def get_forward(self):
-        return self.get_forward_func
+        return self.forward_func
 
 
 def plm_init(PLM_BASE_PATH):
@@ -180,8 +180,8 @@ def plm_init(PLM_BASE_PATH):
             return all_toks, plm_d_model
         
         def forward_func(x):
-            forward = model.forward(x, repr_layers=[model.last_layer])
-            hh = forward["representations"][model.last_layer]
+            forward = model.forward(x, repr_layers=[model.num_layers])
+            hh = forward["representations"][model.num_layers]
             logits = forward["logits"]
             return(logits, hh)
             
