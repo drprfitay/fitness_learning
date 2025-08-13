@@ -811,8 +811,7 @@ def train_plm_triplet_model(
                 trips = torch.tensor(online_mine_triplets(y))
 
                 if len(trips) <= 0:
-                continue     
-                
+                    continue                     
 
                 hh = model(x)
 
