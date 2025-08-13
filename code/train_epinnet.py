@@ -54,6 +54,7 @@ parser.add_argument("--dataset_path", type=str, help="Path to the dataset CSV fi
 parser.add_argument("--save_path", type=str, help="Path to save outputs")
 parser.add_argument("--weights_path", type=str, help="Path to model weights")
 parser.add_argument("--model_type", type=str, help="Type of model to use (e.g., 'plm', 'epinnet')")
+parser.add_argument("--train_type", type=str, help="Type of training to use (e.g., 'direct_mlp')")
 parser.add_argument("--nmuts_column", type=str, help="Column name for number of mutations")
 parser.add_argument("--sequence_column_name", type=str, help="Column name for sequence")
 parser.add_argument("--activity_column_name", type=str, help="Column name for activity")
@@ -63,14 +64,13 @@ parser.add_argument("--plm_name", type=str, help="PLM model name")
 parser.add_argument("--ref_seq", type=str, help="Reference sequence")
 parser.add_argument("--train_indices", type=int, nargs='+', help="List of train indices")
 parser.add_argument("--test_indices", type=int, nargs='+', help="List of test indices")
-parser.add_argument("--pos_to_use", type=int, nargs='+', help="List of positions to use")
+parser.add_argument("--pos_to_use", default=None, type=int, nargs='+', help="List of positions to use")
 parser.add_argument("--load_weights", type=lambda x: (str(x).lower() == 'true'), help="Whether to load weights (True/False)")
 parser.add_argument("--train", type=lambda x: (str(x).lower() == 'true'), help="Whether to train (True/False)")
 parser.add_argument("--train_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse train indices (True/False)")
 parser.add_argument("--test_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse test indices (True/False)")
 parser.add_argument("--evaluate_train", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on train set (True/False)")
 parser.add_argument("--evaluate_test", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on test set (True/False)")
-# INSERT_YOUR_COD
 parser.add_argument("--train_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during training (True/False)")
 parser.add_argument("--inference_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during inference (True/False)")
 parser.add_argument("--lr", type=float, help="Learning rate")
@@ -288,8 +288,9 @@ class plmTrunkModel(torch.nn.Module):
     def __init__(self, 
                  plm_name,
                  hidden_layers=[1024],
-                 activation="sigmoid",
+                 activation="relu",
                  opmode="mean",
+                 emb_only=True,
                  layer_norm=True,
                  use_bias=True,
                  activation_on_last_layer=False,
@@ -316,57 +317,62 @@ class plmTrunkModel(torch.nn.Module):
         self.tokenizer = plm_tokenizer
         self.plm = plm.to(device)
         self.last_layer = plm_obj.get_n_layers()
+        self.forward_func = plm_obj.get_forward()
+        self.specific_pos = specific_pos
         
+        #### IMPORTANT -> this is a bunch of legacy code that I got too scared to delete - I will delete it soon
+
         # if (type(plm) == esm2.model.esm2.ESM2):
         #     self.last_layer = plm_obj.get_n_layers()
             
-        def plm_forward_presentation(x):
-            forward = self.plm.forward(x, repr_layers=[self.last_layer])
-            hh = forward["representations"][self.last_layer]
-            return(hh)
+        # def plm_forward_presentation(x):
+        #     forward = self.plm.forward(x, repr_layers=[self.last_layer])
+        #     hh = forward["representations"][self.last_layer]
+        #     return(hh)
             
-        self.forward_func = plm_forward_presentation                
-        self.opmode = opmode
+        # self.forward_func = plm_forward_presentation                
+        # self.opmode = opmode
         
-        possible_opmodes = ["mean", "class", "avgpool", "pos"]
+        # possible_opmodes = ["mean", "class", "avgpool", "pos"]
         
-        if opmode not in possible_opmodes:
-            raise Exception("Unable to support opmode %s for trunk model, allowed opmodes are: %s" % (opmode, ", ".join(possible_opmodes)))
+        # if opmode not in possible_opmodes:
+        #     raise Exception("Unable to support opmode %s for trunk model, allowed opmodes are: %s" % (opmode, ", ".join(possible_opmodes)))
                         
-        if opmode == "mean":            
-            if specific_pos is not None:
-                # Average across specific positions
-                self.specific_pos = torch.tensor(specific_pos, dtype=torch.int64) - 1 # PDB INDEX!!!!!! (1-based)
+        # if opmode == "mean":            
+        #     if specific_pos is not None:
+        #         # Average across specific positions
+        #         self.specific_pos = torch.tensor(specific_pos, dtype=torch.int64) - 1 # PDB INDEX!!!!!! (1-based)
                 
-                def emb_pool_func(hh):                
-                    return(hh[:,self.specific_pos,:].mean(dim=1))
-            else:
-                def emb_pool_func(hh):                
-                    return(hh.mean(dim=1))
+        #         def emb_pool_func(hh):                
+        #             return(hh[:,self.specific_pos,:].mean(dim=1))
+        #     else:
+        #         def emb_pool_func(hh):                
+        #             return(hh.mean(dim=1))
             
-        elif opmode == "class":
-            class_token = torch.tensor(self.tokenizer.encode("<unk>"), dtype=torch.int64)
+        # elif opmode == "class":
+        #     class_token = torch.tensor(self.tokenizer.encode("<unk>"), dtype=torch.int64)
             
-            def emb_pool_func(hh):
-                return(hh[:,0,:])
+        #     def emb_pool_func(hh):
+        #         return(hh[:,0,:])
             
-        elif opmode == "avgpool":
-            self.conv1d = torch.nn.AvgPool1d(kernel_size=kernel_size,stride=stride)
+        # elif opmode == "avgpool":
+        #     self.conv1d = torch.nn.AvgPool1d(kernel_size=kernel_size,stride=stride)
                 
-            def emb_pool_func(hh):
-                return(self.conv1d(einops.rearrange(hh,"B S D->B D S")).mean(dim=2))   
+        #     def emb_pool_func(hh):
+        #         return(self.conv1d(einops.rearrange(hh,"B S D->B D S")).mean(dim=2))   
         
-        elif opmode == "pos":
-            self.specific_pos = torch.tensor(specific_pos, dtype=torch.int64) - 1 # PDB INDEX!!!!!! (1-based)
+        # elif opmode == "pos":
+        #     self.specific_pos = torch.tensor(specific_pos, dtype=torch.int64) - 1 # PDB INDEX!!!!!! (1-based)
             
-            def emb_pool_func(hh):
-                return(hh[:,self.specific_pos,:].flatten(1,2))
-            
-            
-        trunk_d_in_factor = 1 if opmode != "pos" else len(self.specific_pos)
+        #     def emb_pool_func(hh):
+        #         return(hh[:,self.specific_pos,:].flatten(1,2))
             
             
-        self.emb_func = emb_pool_func
+        # trunk_d_in_factor = 1 if opmode != "pos" else len(self.specific_pos)
+        trunk_d_in_factor = 1
+            
+            
+        # self.emb_func = emb_pool_func
         self.epinnet_trunk = EpiNNet(d_in=plm_d_model * trunk_d_in_factor,
                                      d_out=trunk_classes,                 
                                      hidden_layers=hidden_layers,
@@ -376,6 +382,11 @@ class plmTrunkModel(torch.nn.Module):
                                      activation_on_last_layer=activation_on_last_layer,
                                      device=device,                 
                                      dtype=dtype).to(device)
+
+        if emb_only:
+            self.final_forward = self._emb_only_forward            
+        else:
+            self.final_forward = self._forward
         
     def encode(self, seq):            
         enc_seq = ""
@@ -388,18 +399,18 @@ class plmTrunkModel(torch.nn.Module):
             
 
     def _emb_only_forward(self, x):
-        return self.forward_func(x)
+        return self.forward_func(x)[1]
 
-    def _forward(self, x, pos_to_use):                
-        hh = self.forward_func(x)
+    def _forward(self, x):                
+        hh = self._emb_only_forward(x)
 
-        emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
+        emb = torch.nn.functional.normalize(hh[:,torch.tensor(self.specific_pos),:], dim=1).mean(dim=1)
         emb = torch.nn.functional.normalize(emb, dim=1)
             
         return emb, hh, self.epinnet_trunk(emb)
     
-    def forward(self, x, pos_to_use):
-        return self._forward(x, pos_to_use)
+    def forward(self, x):
+        return self.final_forward(x)
 
 
 class EpiNNetDataset(Dataset):
@@ -595,6 +606,7 @@ class EpiNNetActivityTrainTest(Dataset):
                      internal_batch_size=20):
 
             model = model.to(self.device)
+            model.evaluate()
 
             confs = []
             if eval_train:
@@ -696,6 +708,7 @@ def train_plm_triplet_model(
     opmode="mean",
     hidden_layers=[1024],
     activation="sigmoid",
+    train_type="triplet",
     layer_norm=False,
     activation_on_last_layer=False,
     device=torch.device("cpu"),
@@ -716,6 +729,7 @@ def train_plm_triplet_model(
     print(f"\topmode: {opmode}")
     print(f"\thidden_layers: {hidden_layers}")
     print(f"\tactivation: {activation}")
+    
     print(f"\tlayer_norm: {layer_norm}")
     print(f"\tactivation_on_last_layer: {activation_on_last_layer}")
     print(f"\tdevice: {device}")
@@ -726,10 +740,14 @@ def train_plm_triplet_model(
     checkpoints_dir = os.path.join(save_path, "checkpoints")
     os.makedirs(checkpoints_dir, exist_ok=True)
 
+    # In the future we might have other use cases,
+    emb_only = train_type  == "triplet"
+
     if model is None:
         model = plmTrunkModel(
             plm_name=plm_name,
             opmode=opmode,
+            emb_only=emb_only,
             specific_pos=pos_to_use,
             hidden_layers=hidden_layers,
             activation=activation,
@@ -739,6 +757,12 @@ def train_plm_triplet_model(
         ).to(device)
     else:
         model = model.to(device)
+
+    if train_type == "direct_mlp":
+        for layer in model.epinnet_trunk.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(layer.weight)
+                torch.nn.init.zeros_(layer.bias)
 
     if train_test_dataset is None:
         raise ValueError("train_test_dataset must be provided as an argument.")
@@ -786,7 +810,7 @@ def train_plm_triplet_model(
             # trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
             # total_loss = trip_loss
 
-            a = model(x, pos_to_use)
+            a = model(x)
             total_loss = ce_loss_fn(a[2], y)
             epoch_loss += total_loss.item()
             iter_20b_loss += total_loss.item()
@@ -1162,14 +1186,17 @@ def train_evaluate_plms():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     print(f"ֿ\t\t[INFO] Using device: {device}")
 
+    emb_only = config["train_type"] == "triplet"
+    
     model = plmTrunkModel(
         plm_name=plm_name,
         opmode="mean",
-        specific_pos=None,
+        emb_only = emb_only,
         hidden_layers=[516,256],
         activation="relu",
         layer_norm=False,
         activation_on_last_layer=False,
+        specific_pos=config["pos_to_use"],
         device=device
     ).to(device)
 
@@ -1199,15 +1226,11 @@ def train_evaluate_plms():
     if config["train"]:
 
         model.plm.token_dropout = config["train_drop_tokens"]
-
-        for layer in model.epinnet_trunk.modules():
-            if isinstance(layer, torch.nn.Linear):
-                torch.nn.init.xavier_uniform_(layer.weight)
-                torch.nn.init.zeros_(layer.bias)
         
         model = \
             train_plm_triplet_model(
                 plm_name=plm_name,
+                train_type=config["train_type"],
                 save_path=config["save_path"],
                 train_test_dataset=train_test_dataset,
                 pos_to_use=config["pos_to_use"],
