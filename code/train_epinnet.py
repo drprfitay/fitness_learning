@@ -390,14 +390,16 @@ class plmTrunkModel(torch.nn.Module):
     def _emb_only_forward(self, x):
         return self.forward_func(x)
 
-    def _forward(self, x):                
+    def _forward(self, x, pos_to_use):                
         hh = self.forward_func(x)
-        emb = self.emb_func(hh)
+
+        emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
+        emb = torch.nn.functional.normalize(emb, dim=1)
             
         return emb, hh, self.epinnet_trunk(emb)
     
-    def forward(self, x):
-        return self._emb_only_forward(x)
+    def forward(self, x, pos_to_use):
+        return self._forward(x, pos_to_use)
 
 
 class EpiNNetDataset(Dataset):
@@ -750,7 +752,8 @@ def train_plm_triplet_model(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     triplet_loss = torch.nn.TripletMarginLoss(margin=margin, eps=1e-7)
-    
+    ce_loss_fn = torch.nn.CrossEntropyLoss()
+
     model.train()
     avg_loss = torch.tensor([]).to(device)
     total_steps = 0
@@ -758,27 +761,33 @@ def train_plm_triplet_model(
     running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
     running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
 
+    train_test_dataset.train_dataset.labels = torch.nn.functional.one_hot(
+        train_test_dataset.train_dataset.labels.to(torch.long), 2
+    ).to(torch.float)
+
     for epoch in range(n_epochs):
         epoch_loss = torch.tensor(0.0).to(device)
         iter_20b_loss = torch.tensor(0.0).to(device)
         for step, batch in enumerate(train_loader):
             x = batch[0].to(device)
             y = batch[1].to(device)
-            trips = torch.tensor(online_mine_triplets(y))
+            #trips = torch.tensor(online_mine_triplets(y))
 
-            if len(trips) <= 0:
-                continue     
+            #if len(trips) <= 0:
+            #    continue     
             optimizer.zero_grad()
 
-            hh = model(x)
+            # hh = model(x)
 
-            emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
-            emb = torch.nn.functional.normalize(emb, dim=1)
-            emb_trip = emb[trips]
+            # emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
+            # emb = torch.nn.functional.normalize(emb, dim=1)
+            # emb_trip = emb[trips]
 
-            trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
-            total_loss = trip_loss
+            # trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
+            # total_loss = trip_loss
 
+            a = model(x, pos_to_use)
+            total_loss = ce_loss_fn(a[2], y)
             epoch_loss += total_loss.item()
             iter_20b_loss += total_loss.item()
 
@@ -795,7 +804,8 @@ def train_plm_triplet_model(
                 iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
                 plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
                 plt.show()
-            print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
+            #print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
+            print("[E%d I%d] %.3f " % (epoch, step, total_loss))
             if total_steps % 1000 == 0:
                 print("\t\tCheckpoint [%d]" % total_steps)
                 torch.save(model.state_dict(), checkpoints_dir + "/checkpoint_model_%d.pt" % total_steps)
@@ -1156,8 +1166,8 @@ def train_evaluate_plms():
         plm_name=plm_name,
         opmode="mean",
         specific_pos=None,
-        hidden_layers=[4096,4096],
-        activation="sigmoid",
+        hidden_layers=[516,256],
+        activation="relu",
         layer_norm=False,
         activation_on_last_layer=False,
         device=device
@@ -1189,6 +1199,11 @@ def train_evaluate_plms():
     if config["train"]:
 
         model.plm.token_dropout = config["train_drop_tokens"]
+
+        for layer in model.epinnet_trunk.modules():
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(layer.weight)
+                torch.nn.init.zeros_(layer.bias)
         
         model = \
             train_plm_triplet_model(
