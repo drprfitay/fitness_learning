@@ -19,7 +19,7 @@ TEST_INDICES_ARGS=(${TEST_INDICES_CSV//,/ })
 TRAIN_MUTS="${TRAIN_INDICES_CSV//,/}"
 TEST_MUTS="${TEST_INDICES_CSV//,/}"
 
-SAVE_PATH="pretraining/esm8m/zero_shot/train_${TRAIN_MUTS}_test_${TEST_MUTS}"
+SAVE_PATH="../pretraining/esm8m/zero_shot/train_${TRAIN_MUTS}_test_${TEST_MUTS}"
 
 SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS}_${TEST_MUTS}_$$.sh"
 
@@ -32,6 +32,7 @@ python ../code/train_epinnet.py \\
     --evaluate_train True \\
     --evaluate_test True \\
     --save_path "$SAVE_PATH" \\
+    --config ../code/config.yaml
     --train_indices ${TRAIN_INDICES_ARGS[@]} \\
     --test_indices ${TEST_INDICES_ARGS[@]}
 EOF
