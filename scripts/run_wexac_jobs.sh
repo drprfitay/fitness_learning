@@ -12,9 +12,9 @@ fi
 TRAIN_INDICES_CSV="$1"
 TEST_INDICES_CSV="$2"
 
-# Convert comma-separated to python list string
-TRAIN_INDICES_LIST="[$TRAIN_INDICES_CSV]"
-TEST_INDICES_LIST="[$TEST_INDICES_CSV]"
+# Convert comma-separated to space-separated for passing as multiple arguments
+TRAIN_INDICES_ARGS=(${TRAIN_INDICES_CSV//,/ })
+TEST_INDICES_ARGS=(${TEST_INDICES_CSV//,/ })
 
 TRAIN_MUTS="${TRAIN_INDICES_CSV//,/}"
 TEST_MUTS="${TEST_INDICES_CSV//,/}"
@@ -32,8 +32,8 @@ python ../code/train_epinnet.py \\
     --evaluate_train True \\
     --evaluate_test True \\
     --save_path "$SAVE_PATH" \\
-    --train_indices "$TRAIN_INDICES_LIST" \\
-    --test_indices "$TEST_INDICES_LIST" 
+    --train_indices ${TRAIN_INDICES_ARGS[@]} \\
+    --test_indices ${TEST_INDICES_ARGS[@]}
 EOF
 
 chmod +x "$SCRIPT_NAME"
