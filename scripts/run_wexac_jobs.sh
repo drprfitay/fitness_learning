@@ -38,8 +38,8 @@ EOF
 
 chmod +x "$SCRIPT_NAME"
 
-#bsub -n 6 -gpu num=1gmem=12G:aff=yes -R same[gpumodel] -R span[ptile=6] -q short-gpu "./$SCRIPT_NAME"
+bsub -n 6 -gpu num=1gmem=12G:aff=yes -R same[gpumodel] -R span[ptile=6] -q short-gpu "./$SCRIPT_NAME"
 
 # Wait a moment to ensure job is submitted before deleting
 sleep 2
-#rm "$SCRIPT_NAME"
+rm "$SCRIPT_NAME"
