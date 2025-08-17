@@ -676,6 +676,8 @@ class EpiNNetActivityTrainTest(Dataset):
                     if hasattr(value, "savefig"):
                         fig_path = os.path.join(prefix_folder, f"{filename}.png")
                         value.savefig(fig_path)
+                        fig_path_pdf = os.path.join(prefix_folder, f"{filename}.pdf")
+                        value.savefig(fig_path_pdf, format="pdf")
                         plt.close(value)
                     # Save pandas DataFrame
                     elif hasattr(value, "to_csv"):
