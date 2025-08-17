@@ -1085,18 +1085,16 @@ def embeddings_finalize_function(agg_dict, dataset):
         embeddings = embeddings[idx].copy()
         ground_truth = ground_truth[idx].copy()
 
-    tsne = TSNE(n_components=3, random_state=42)
-    emb_3d = tsne.fit_transform(embeddings)
+    tsne = TSNE(n_components=2, random_state=42)
+    emb_2d = tsne.fit_transform(embeddings)
 
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    scatter = ax.scatter(emb_3d[:, 0], emb_3d[:, 1], emb_3d[:, 2], c=ground_truth, cmap='viridis', alpha=0.7)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    scatter = ax.scatter(emb_2d[:, 0], emb_2d[:, 1], c=ground_truth, cmap='viridis', alpha=0.7)
     legend1 = ax.legend(*scatter.legend_elements(), title="Labels")
     ax.add_artist(legend1)
-    ax.set_title("t-SNE of Embeddings (3D)")
+    ax.set_title("t-SNE of Embeddings (2D)")
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
-    ax.set_zlabel("t-SNE 3")
     plt.show()
 
     # Instead of showing the plot, return the figure object so it can be saved elsewhere
