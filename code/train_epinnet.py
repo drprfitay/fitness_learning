@@ -606,7 +606,7 @@ class EpiNNetActivityTrainTest(Dataset):
                      internal_batch_size=20):
 
             model = model.to(self.device)
-            model.evaluate()
+            model.eval()
 
             confs = []
             if eval_train:
@@ -1357,3 +1357,6 @@ if config["model_type"] == "plm":
     train_evaluate_plms()
 elif config["model_type"] == "epinnet":
     train_evaluate_epinnet()    
+
+
+
