@@ -3,8 +3,8 @@
 # Usage: ./submit_epinnet.sh "1,2,3,4" 
 # $1: comma-separated train mutation indices (e.g. "1,2,3,4")
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <train_indices_comma_separated> 
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <train_indices_comma_separated>"
     exit 1
 fi
 
@@ -31,7 +31,6 @@ python -u ../code/train_epinnet.py \\
     --save_path "$SAVE_PATH" \\
     --config ../code/config.yaml \\
     --train_indices ${TRAIN_INDICES_ARGS[@]}
-    
 EOF
 
 chmod +x "$SCRIPT_NAME"
