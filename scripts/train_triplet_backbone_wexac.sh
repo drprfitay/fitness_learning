@@ -17,7 +17,7 @@ TRAIN_MUTS="${TRAIN_INDICES_CSV//,/}"
 
 SAVE_PATH="pretraining/esm8m/one_shot/triplet_backbone/train_${TRAIN_MUTS}"
 
-SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS}_$$.sh"
+SCRIPT_NAME="tmp/triplet_run_epinnet_${TRAIN_MUTS}_$$.sh"
 
 cat <<EOF > "$SCRIPT_NAME"
 #!/bin/bash
