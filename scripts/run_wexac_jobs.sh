@@ -27,7 +27,7 @@ cat <<EOF > "$SCRIPT_NAME"
 #!/bin/bash
 source ~/.bashrc
 conda activate esm_env
-python ../code/train_epinnet.py \\
+python -u ../code/train_epinnet.py \\
     --train False \\
     --evaluate_train True \\
     --evaluate_test True \\
