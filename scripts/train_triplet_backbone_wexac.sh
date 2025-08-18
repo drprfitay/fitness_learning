@@ -30,7 +30,7 @@ python -u ../code/train_epinnet.py \\
     --evaluate_test False \\
     --save_path "$SAVE_PATH" \\
     --config ../code/config.yaml \\
-    --train_indices ${TRAIN_INDICES_ARGS[@]} \\
+    --train_indices ${TRAIN_INDICES_ARGS[@]}
     
 EOF
 
