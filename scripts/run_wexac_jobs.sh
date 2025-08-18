@@ -28,7 +28,7 @@ TEST_MUTS="${TEST_INDICES_CSV//,/}"
 if [ "$USE_BACKBONE" = true ]; then
     # Save path for backbone mode
     SAVE_PATH="pretraining/esm8m/one_shot/triplet_backbone/train_${TRAIN_MUTS}/train_${TRAIN_MUTS}_test_${TEST_MUTS}"
-    WEIGHTS_PATH="pretraining/esm8m/one_shot/triplet_backbone/train_${TRAIN_MUTS}"
+    WEIGHTS_PATH="pretraining/esm8m/one_shot/triplet_backbone/train_${TRAIN_MUTS}/final_model.pt"
     EXTRA_ARGS="--load_weights True --weights_path \"$WEIGHTS_PATH\""
     SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS}_${TEST_MUTS}_backbone_$$.sh"
 else
