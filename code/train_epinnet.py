@@ -655,7 +655,7 @@ class EpiNNetActivityTrainTest(Dataset):
                 print(f"About to evaluate {num_sequences} sequences on {'train' if is_train else 'test'} set.")                
                 
                 for idx, data in enumerate(dataloader):                
-                    if idx % (len(dataloader) // 20) == 0:
+                    if idx % ((len(dataloader) // 20) + 1) == 0:
                         print(f"[DEBUG] Progress: {idx}/{len(dataloader)} batches evaluated")
                         
                     aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data, self.device)
@@ -1052,23 +1052,23 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
     emb = torch.nn.functional.normalize(emb, dim=1)
 
     if "trip_loss" not in agg_dict.keys():
-        agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float, device=device)
+        agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float, device=torch.device("cpu"))
     
     if "embeddings" not in agg_dict.keys():
-        agg_dict['embeddings'] = torch.tensor([], dtype=torch.float, device=device)
+        agg_dict['embeddings'] = torch.tensor([], dtype=torch.float, device=torch.device("cpu"))
 
     if "ground_truth" not in agg_dict.keys():
-        agg_dict['ground_truth'] = torch.tensor([], dtype=torch.float, device=device)
+        agg_dict['ground_truth'] = torch.tensor([], dtype=torch.float, device=torch.device("cpu"))
 
     trips = torch.tensor(online_mine_triplets(y))
 
     if len(trips) > 0:
         emb_trip = emb[trips]
         trip_loss = triplet_loss(emb_trip[:, 0, :], emb_trip[:, 1, :], emb_trip[:, 2, :])
-        agg_dict["trip_loss"] = torch.cat([agg_dict['trip_loss'], trip_loss.detach().reshape(-1)], dim=0)
+        agg_dict["trip_loss"] = torch.cat([agg_dict['trip_loss'], trip_loss.detach().cpu().reshape(-1)], dim=0)
 
-    agg_dict["embeddings"] = torch.cat([agg_dict['embeddings'], emb.detach()], dim=0)
-    agg_dict["ground_truth"] = torch.cat([agg_dict["ground_truth"], y.detach().reshape(-1)], dim=0)
+    agg_dict["embeddings"] = torch.cat([agg_dict['embeddings'], emb.detach().cpu()], dim=0)
+    agg_dict["ground_truth"] = torch.cat([agg_dict["ground_truth"], y.detach().cpu().reshape(-1)], dim=0)
 
     return agg_dict
 
