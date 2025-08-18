@@ -1070,6 +1070,7 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
     agg_dict["embeddings"] = torch.cat([agg_dict['embeddings'], emb.detach().cpu()], dim=0)
     agg_dict["ground_truth"] = torch.cat([agg_dict["ground_truth"], y.detach().cpu().reshape(-1)], dim=0)
 
+    torch.cuda.empty_cache() 
     return agg_dict
 
 @torch.no_grad()
