@@ -66,7 +66,7 @@ TRAIN_MUTS_PATH="${TRAIN_INDICES_CSV//,/'x'}"
 TEST_MUTS_PATH="${TEST_INDICES_CSV//,/'x'}"
 
 # Set config file based on ESM_DIR
-CONFIG_FILE="../configs/${ESM_DIR}_config.py"
+CONFIG_FILE="../configs/${ESM_DIR}_config.yaml"
 
 if [ "$USE_BACKBONE" = true ]; then
     # Save path for backbone mode
