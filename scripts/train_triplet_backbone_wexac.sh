@@ -24,7 +24,7 @@ if [ "$#" -eq 2 ]; then
         PLM_NAME="esm2_t12_35M_UR50D"
     elif [ "$2" == "--esm650" ]; then
         ESM_FLAG="--esm650"
-        ESM_DIR="650m"
+        ESM_DIR="esm650m"
         PLM_NAME="esm2_t33_650M_UR50D"
     elif [ "$2" == "--esm8" ]; then
         ESM_FLAG="--esm8"
@@ -41,11 +41,15 @@ fi
 # Convert comma-separated to space-separated for passing as multiple arguments
 TRAIN_INDICES_ARGS=(${TRAIN_INDICES_CSV//,/ })
 
-TRAIN_MUTS="${TRAIN_INDICES_CSV//,/}"
+# For path: join train indices with 'x' instead of nothing
+TRAIN_MUTS_X=$(echo "$TRAIN_INDICES_CSV" | tr ',' 'x')
 
-SAVE_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS}"
+SAVE_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS_X}"
 
-SCRIPT_NAME="tmp/triplet_run_epinnet_${TRAIN_MUTS}_${ESM_DIR}_$$.sh"
+SCRIPT_NAME="tmp/triplet_run_epinnet_${TRAIN_MUTS_X}_${ESM_DIR}_$$.sh"
+
+# Set config file based on ESM_DIR
+CONFIG_FILE="../code/${ESM_DIR}_config.py"
 
 cat <<EOF > "$SCRIPT_NAME"
 #!/bin/bash
@@ -57,15 +61,15 @@ python -u ../code/train_epinnet.py \\
     --evaluate_train False \\
     --evaluate_test False \\
     --save_path "$SAVE_PATH" \\
-    --config ../code/config.yaml \\
+    --config $CONFIG_FILE \\
     --train_indices ${TRAIN_INDICES_ARGS[@]} \\
     --plm_name "$PLM_NAME"
 EOF
 
 chmod +x "$SCRIPT_NAME"
 
-ERR_FILE="./triplet_err_file_${TRAIN_MUTS}_${ESM_DIR}_$$"
-OUT_FILE="./triplet_out_file_${TRAIN_MUTS}_${ESM_DIR}_$$"
+ERR_FILE="./triplet_err_file_${TRAIN_MUTS_X}_${ESM_DIR}_$$"
+OUT_FILE="./triplet_out_file_${TRAIN_MUTS_X}_${ESM_DIR}_$$"
 bsub -n 6 -gpu num=1:gmem=12G:aff=yes -R same[gpumodel] -R rusage[mem=64GB] -R span[ptile=6] -o "$ERR_FILE" -e "$OUT_FILE" -q short-gpu "./$SCRIPT_NAME" 
 
 # Wait a moment to ensure job is submitted before deleting

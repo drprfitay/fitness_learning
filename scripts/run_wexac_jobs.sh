@@ -30,7 +30,7 @@ if [ "$#" -eq 3 ]; then
         PLM_NAME="esm2_t12_35M_UR50D"
     elif [ "$3" == "--esm650" ]; then
         ESM_FLAG="--esm650"
-        ESM_DIR="650m"
+        ESM_DIR="esm650m"
         PLM_NAME="esm2_t33_650M_UR50D"
     fi
 elif [ "$#" -eq 4 ]; then
@@ -43,7 +43,7 @@ elif [ "$#" -eq 4 ]; then
         PLM_NAME="esm2_t12_35M_UR50D"
     elif [ "$4" == "--esm650" ]; then
         ESM_FLAG="--esm650"
-        ESM_DIR="650m"
+        ESM_DIR="esm650m"
         PLM_NAME="esm2_t33_650M_UR50D"
     elif [ "$4" == "--esm8" ]; then
         ESM_FLAG="--esm8"
@@ -61,20 +61,21 @@ fi
 TRAIN_INDICES_ARGS=(${TRAIN_INDICES_CSV//,/ })
 TEST_INDICES_ARGS=(${TEST_INDICES_CSV//,/ })
 
-TRAIN_MUTS="${TRAIN_INDICES_CSV//,/}"
-TEST_MUTS="${TEST_INDICES_CSV//,/}"
+# For path naming: join with 'x' instead of nothing
+TRAIN_MUTS_PATH="${TRAIN_INDICES_CSV//,/'x'}"
+TEST_MUTS_PATH="${TEST_INDICES_CSV//,/'x'}"
 
 if [ "$USE_BACKBONE" = true ]; then
     # Save path for backbone mode
-    SAVE_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS}/train_${TRAIN_MUTS}_test_${TEST_MUTS}"
-    WEIGHTS_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS}/final_model.pt"
+    SAVE_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS_PATH}/train_${TRAIN_MUTS_PATH}_test_${TEST_MUTS_PATH}"
+    WEIGHTS_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS_PATH}/final_model.pt"
     EXTRA_ARGS="--load_weights True --weights_path \"$WEIGHTS_PATH\""
-    SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS}_${TEST_MUTS}_backbone_${ESM_DIR}_$$.sh"
+    SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_backbone_${ESM_DIR}_$$.sh"
 else
     # Default zero-shot save path
-    SAVE_PATH="pretraining/${ESM_DIR}/zero_shot/train_${TRAIN_MUTS}_test_${TEST_MUTS}"
+    SAVE_PATH="pretraining/${ESM_DIR}/zero_shot/train_${TRAIN_MUTS_PATH}_test_${TEST_MUTS_PATH}"
     EXTRA_ARGS=""
-    SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS}_${TEST_MUTS}_${ESM_DIR}_$$.sh"
+    SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_${ESM_DIR}_$$.sh"
 fi
 
 cat <<EOF > "$SCRIPT_NAME"
@@ -96,11 +97,11 @@ EOF
 chmod +x "$SCRIPT_NAME"
 
 if [ "$USE_BACKBONE" = true ]; then
-    ERR_FILE="./err_file_${TRAIN_MUTS}_${TEST_MUTS}_backbone_${ESM_DIR}_$$"
-    OUT_FILE="./out_file_${TRAIN_MUTS}_${TEST_MUTS}_backbone_${ESM_DIR}_$$"
+    ERR_FILE="./err_file_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_backbone_${ESM_DIR}_$$"
+    OUT_FILE="./out_file_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_backbone_${ESM_DIR}_$$"
 else
-    ERR_FILE="./err_file_${TRAIN_MUTS}_${TEST_MUTS}_${ESM_DIR}_$$"
-    OUT_FILE="./out_file_${TRAIN_MUTS}_${TEST_MUTS}_${ESM_DIR}_$$"
+    ERR_FILE="./err_file_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_${ESM_DIR}_$$"
+    OUT_FILE="./out_file_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_${ESM_DIR}_$$"
 fi
 
 bsub -n 6 -gpu num=1:gmem=12G:aff=yes -R same[gpumodel] -R rusage[mem=64GB] -R span[ptile=6] -o "$ERR_FILE" -e "$OUT_FILE" -q short-gpu "./$SCRIPT_NAME" 
