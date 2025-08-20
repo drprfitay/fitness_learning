@@ -1262,7 +1262,8 @@ def train_evaluate_plms():
                                     embeddings_evaluate_function, 
                                     embeddings_finalize_function,
                                     eval_train=config["evaluate_train"],
-                                    eval_test=config["evaluate_test"])
+                                    eval_test=config["evaluate_test"],
+                                    internal_batch_size=config["batch_size"])
 
     if config["evaluate_train"] and config["evaluate_test"]:
         # Train and evaluate simple trunk
