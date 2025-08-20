@@ -49,7 +49,7 @@ SAVE_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS_X
 SCRIPT_NAME="tmp/triplet_run_epinnet_${TRAIN_MUTS_X}_${ESM_DIR}_$$.sh"
 
 # Set config file based on ESM_DIR
-CONFIG_FILE="../code/${ESM_DIR}_config.py"
+CONFIG_FILE="../configs/${ESM_DIR}_config.py"
 
 cat <<EOF > "$SCRIPT_NAME"
 #!/bin/bash

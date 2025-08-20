@@ -65,6 +65,9 @@ TEST_INDICES_ARGS=(${TEST_INDICES_CSV//,/ })
 TRAIN_MUTS_PATH="${TRAIN_INDICES_CSV//,/'x'}"
 TEST_MUTS_PATH="${TEST_INDICES_CSV//,/'x'}"
 
+# Set config file based on ESM_DIR
+CONFIG_FILE="../configs/${ESM_DIR}_config.py"
+
 if [ "$USE_BACKBONE" = true ]; then
     # Save path for backbone mode
     SAVE_PATH="pretraining/${ESM_DIR}/one_shot/triplet_backbone/train_${TRAIN_MUTS_PATH}/train_${TRAIN_MUTS_PATH}_test_${TEST_MUTS_PATH}"
@@ -87,7 +90,7 @@ python -u ../code/train_epinnet.py \\
     --evaluate_train True \\
     --evaluate_test True \\
     --save_path "$SAVE_PATH" \\
-    --config ../code/config.yaml \\
+    --config $CONFIG_FILE \\
     --train_indices ${TRAIN_INDICES_ARGS[@]} \\
     --test_indices ${TEST_INDICES_ARGS[@]} \\
     --plm_name "$PLM_NAME" \\

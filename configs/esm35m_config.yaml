@@ -1,7 +1,7 @@
 root_path: "/home/labs/fleishman/itayta/fitness/"
 dataset_path: "retraining_esm/gfp_dataset.csv"
-save_path: "retraining_esm/esm8m/one_shot/triplet/train_1234"
-weights_path: "retraining_esm/one_shot/"
+save_path: "pretraining/esm35m/"
+weights_path: "pretraining/esm35m/"
 
 
 model_type: "plm"
@@ -13,7 +13,7 @@ sequence_column_name: "full_seq"
 activity_column_name: "inactive"
 first_column_name: "L42"
 last_column_name: "V224"
-plm_name: "esm2_t6_8M_UR50D"
+plm_name: "esm2_t12_35M_UR50D"
 ref_seq: "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
 
 
