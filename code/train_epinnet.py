@@ -988,7 +988,7 @@ def epinnet_evaluate_function(model, data, aggregated_evaluated_data, device=tor
     ce_loss_fn = torch.nn.CrossEntropyLoss()
     batch_loss = ce_loss_fn(y_pred, y)
 
-    # Accumulate predictions, scores, true labels, and loss
+        # Accumulate predictions, scores, true labels, and loss
     if "pred_label" not in aggregated_evaluated_data:
         aggregated_evaluated_data["pred_label"] = torch.tensor([], dtype=torch.long)
     if "active_prob" not in aggregated_evaluated_data:
@@ -1011,6 +1011,10 @@ def epinnet_evaluate_function(model, data, aggregated_evaluated_data, device=tor
         [aggregated_evaluated_data["loss"], batch_loss.detach().reshape(-1).cpu()]
     )
 
+    # Flush the CUDA cache to free up unused memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
     return aggregated_evaluated_data
 
 @torch.no_grad()
