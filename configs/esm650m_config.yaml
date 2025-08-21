@@ -33,8 +33,8 @@ train_drop_tokens: True
 inference_drop_tokens: False
 
 
-# Integers
-lr: 4e-6
+# Integersx
+lr: 5e-7
 batch_size: 16 
 iterations: 12000
 

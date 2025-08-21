@@ -87,7 +87,6 @@ source ~/.bashrc
 conda activate esm_env
 python -u ../code/train_epinnet.py \\
     --train False \\
-    --evaluate_train True \\
     --evaluate_test True \\
     --save_path "$SAVE_PATH" \\
     --config $CONFIG_FILE \\
@@ -107,7 +106,7 @@ else
     OUT_FILE="./out_file_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_${ESM_DIR}_$$"
 fi
 
-bsub -n 6 -gpu num=1:gmem=12G:aff=yes -R same[gpumodel] -R rusage[mem=64GB] -R span[ptile=6] -o "$ERR_FILE" -e "$OUT_FILE" -q short-gpu "./$SCRIPT_NAME" 
+bsub -n 6 -gpu num=1:gmem=12G:aff=yes -R same[gpumodel] -R rusage[mem=64GB] -R span[ptile=6] -e "$ERR_FILE" -o "$OUT_FILE" -q short-gpu "./$SCRIPT_NAME" 
 
 # Wait a moment to ensure job is submitted before deleting
 #sleep 2

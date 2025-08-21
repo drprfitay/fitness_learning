@@ -70,7 +70,7 @@ chmod +x "$SCRIPT_NAME"
 
 ERR_FILE="./triplet_err_file_${TRAIN_MUTS_X}_${ESM_DIR}_$$"
 OUT_FILE="./triplet_out_file_${TRAIN_MUTS_X}_${ESM_DIR}_$$"
-bsub -n 6 -gpu num=1:gmem=12G:aff=yes -R same[gpumodel] -R rusage[mem=64GB] -R span[ptile=6] -o "$ERR_FILE" -e "$OUT_FILE" -q short-gpu "./$SCRIPT_NAME" 
+bsub -n 6 -gpu num=1:gmem=12G:aff=yes -R same[gpumodel] -R rusage[mem=64GB] -R span[ptile=6] -e "$ERR_FILE" -o "$OUT_FILE" -q short-gpu "./$SCRIPT_NAME" 
 
 # Wait a moment to ensure job is submitted before deleting
 #sleep 2
