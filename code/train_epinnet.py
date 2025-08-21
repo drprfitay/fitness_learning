@@ -1015,7 +1015,7 @@ def epinnet_evaluate_function(model, data, aggregated_evaluated_data, device=tor
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         
-            return aggregated_evaluated_data
+    return aggregated_evaluated_data
 
 @torch.no_grad()
 def epinnet_finalize_function(aggregated_evaluated_data, dataset):
