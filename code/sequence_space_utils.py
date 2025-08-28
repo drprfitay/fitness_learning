@@ -8,8 +8,17 @@ Created on Tue Apr  1 14:28:01 2025
 import torch
 import torch.nn.functional as F
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import time
+import string
+
+
+from Bio import pairwise2
+from Bio.Seq import Seq
+from Bio.Align import substitution_matrices
+from Bio import SeqIO
+
 
 def fitness_from_prob(pssm, wt_tensor, variant_tensor):    
     wt_one_hot = torch.nn.functional.one_hot(torch.tensor(wt_tensor), pssm.shape[1])
@@ -176,3 +185,75 @@ def plot_hists(active, inactive, save_path=None):
     plt.pause(8)
     #time.sleep(8)
     plt.close()
+
+
+def get_one_hot_encoding(sdf, first_col, last_col):
+    si = np.where(sdf.columns == first_col)[0][0]
+    ei = np.where(sdf.columns == last_col)[0][0]
+    
+    one_hot_encoding = torch.from_numpy(pd.get_dummies(sdf[sdf.columns[si:ei]]).to_numpy()).to(torch.int64)
+
+    return(one_hot_encoding)
+
+
+
+deletekeys = dict.fromkeys(string.ascii_lowercase)
+deletekeys["."] = None
+deletekeys["*"] = None
+translation = str.maketrans(deletekeys)
+    
+def read_sequence(filename: str) -> tuple[str, str]:
+    """ Reads the first (reference) sequences from a fasta or MSA file."""
+    record = next(SeqIO.parse(filename, "fasta"))
+    return record.description, str(record.seq)
+
+def remove_insertions(sequence: str) -> str:
+    """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
+    return sequence.translate(translation)
+
+def read_msa(filename: str) -> list[tuple[str, str]]:
+    """ Reads the sequences from an MSA file, automatically removes insertions."""
+    return [(record.description, remove_insertions(str(record.seq))) for record in SeqIO.parse(filename, "fasta")]
+
+def get_non_alignment_regions(s):
+    regions = []
+    pad_region = False
+    aa_start = None
+
+    for i, c in enumerate(s):
+        if c != '-':
+            if not pad_region:
+                aa_start = i
+                pad_region = True
+        else:
+            if pad_region:
+                aa_end = i - 1
+                regions.append((aa_start, aa_end))
+                pad_region = False
+    if pad_region:
+        regions.append((aa_start, len(s) - 1))
+    # Now, format as "start_end" for first, then "xstartxend" for others
+    if not regions:
+        return ""
+    out = []
+    for idx, (st, en) in enumerate(regions):
+        if idx == 0:
+            out.append(f"{st}_{en}")
+        else:
+            out.append(f"x{st}x{en}")
+    return "".join(out)
+
+# Example usage:
+# s = "---XBC--X--A--XXX--"
+# print(get_non_alignment_regions(s))  # Output: "3_5x8x8x11x11x14_16"
+
+    
+def generate_msa_df_from_aligned_msa(aligned_msa_path):
+    msa = read_msa(aligned_msa_path)
+    msa_str = [msa[i][1] for i in range(0, len(msa))]
+    non_pad_regions = [get_non_alignment_regions(s) for s in msa_str]
+    msa_df = pd.DataFrame({"sequence": msa_str,
+                           "pad_regions": non_pad_regions})
+    return msa_df
+    
+

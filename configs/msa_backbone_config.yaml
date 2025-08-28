@@ -1,0 +1,39 @@
+root_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
+dataset_path: "data/pretraining_msa_csv/gfp_alm.csv"
+save_path: "pretraining/msa_backbone/gfp_1750/"
+weights_path: "pretraining/triplet_loss_backbones/final_model.pt"
+
+
+model_type: "plm"
+train_type: "msa_backbone"
+# Strings
+
+sequence_column_name: "sequence"
+activity_column_name: "index"
+first_column_name: "L42"
+last_column_name: "V224"
+plm_name: "esm2_t12_35M_UR50D"
+ref_seq: "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN"
+
+
+# Lists
+train_indices: [1,2,3]
+test_indices: [4]
+pos_to_use: [42, 44, 61, 65, 68, 69, 72, 94, 108, 112, 121, 145, 148, 150, 167, 181, 185, 203, 205, 220, 222, 224]
+
+# Booleans
+load_weights: False
+train: True
+train_indices_rev: False
+test_indices_rev: False
+evaluate_train: True 
+evaluate_test: True
+train_drop_tokens: True
+inference_drop_tokens: False
+
+
+# Integers
+lr: 1e-6
+batch_size: 32
+iterations: 20000
+
