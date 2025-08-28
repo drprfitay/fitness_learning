@@ -31,7 +31,7 @@ import loralib as lora
 import numpy as np
 import matplotlib.pyplot as plt
 import subprocess
-import argparser
+import argparse
 
 
 
@@ -50,7 +50,7 @@ parser.add_argument("--operations", nargs='+', help='List of indices to work on'
 
 
 # Parse the arguments
-args = parser.parse_args()
+#args = parser.parse_args()
 
 
 
@@ -366,10 +366,13 @@ def generate_data_for_pseudo_protein(indices):
     
     
     
+   
+
+inverse_folding_example()
+#def master():
     
-def master():
-    
-    
+ 
+raw_forward(model, model_input)
     
 
     
@@ -384,9 +387,9 @@ elif args.mode == "forward":
 elif args.mode == "gen_pdb":
     pass
 elif args.mode == "grad_master":
-    pass:        
+    pass
 elif args.mode == "grad":
-    pass:
+    pass
     
 # Run the command
 

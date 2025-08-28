@@ -1445,10 +1445,6 @@ def train_evaluate_plms():
         train_trunk_mlp(config["save_path"])
 
 # EPINNET DATASET:
-
-
-
-
 def train_evaluate_epinnet():
 
     # Define train/test split functions
@@ -1588,15 +1584,15 @@ def train_evaluate_msa_backbone():
             )
 
 
-       
-    if config["evaluate_train"] or config["evaluate_test"]:
-        train_test_dataset.evaluate(
-            msa_backbone_model,
-            #msa_backbone_evaluate_function,
-            #msa_backbone_finalize_function,
-            eval_train=config.get("evaluate_train", False),
-            eval_test=config.get("evaluate_test", False)
-        )
+    # TODO: Add evaluation function   
+    # if config["evaluate_train"] or config["evaluate_test"]:
+    #     train_test_dataset.evaluate(
+    #         msa_backbone_model,
+    #         #msa_backbone_evaluate_function,
+    #         #msa_backbone_finalize_function,
+    #         eval_train=config.get("evaluate_train", False),
+    #         eval_test=config.get("evaluate_test", False)
+    #     )
 
 
 if config["model_type"] == "plm":

@@ -981,19 +981,22 @@ def evaluate(dataset_path=None,
 
 
     
+   
 def main():
     parser = argparse.ArgumentParser(description="A simple tool for re-training PLMs for protein function prediction.")
     
     # Add arguments
     parser.add_argument('--yaml_path', type=str, required=False, help='Path to yaml configuration for training')
     parser.add_argument('--mode', type=str, required=False, help='Has to be train or evaluate')
+    parser.add_argument('--train', type=bool, default=False)
+    parser.add_argument('--evaluate', type=bool, default=False)
 
     # Parse arguments
     args = parser.parse_args()
 
     
-    #yaml_path = args.yaml_path
-    yaml_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/retraining_esm/example_conf.yaml"
+    yaml_path = args.yaml_path
+    #yaml_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/retraining_esm/example_conf.yaml"
     
         
     with open(yaml_path, "r") as file:
@@ -1024,11 +1027,13 @@ def main():
     if type(yaml_args["learning_rate"]) != float:
         yaml_args["learning_rate"] = float(yaml_args["learning_rate"])
     
-    pretrained_weights = yaml_args["save_path"] + "/final_model.pt"
-    pretrained_weights=train_esm_model(**yaml_args)
-    yaml_args["pretrained_weights_path"] = pretrained_weights
-    evaluate(**yaml_args)
-    
+    if args.train:
+        pretrained_weights = yaml_args["save_path"] + "/final_model.pt"
+        pretrained_weights=train_esm_model(**yaml_args)
+        yaml_args["pretrained_weights_path"] = pretrained_weights
+
+    if args.evaluate:
+        evaluate(**yaml_args)
     
 if __name__ == "__main__":
         main()
