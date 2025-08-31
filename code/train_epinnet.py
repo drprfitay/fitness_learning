@@ -82,7 +82,7 @@ parser.add_argument("--iterations", type=int, help="Number of iterations")
 args = parser.parse_args()
 config_path = args.config
 
-config_path = "msa_backbone_config.yaml"
+#config_path = "msa_backbone_config.yaml"
 # Load configuration from YAML file
 with open(config_path, "r") as f:
     config = yaml.safe_load(f)

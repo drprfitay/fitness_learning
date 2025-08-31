@@ -7,4 +7,5 @@ __pycache__/
 executions/
 rosetta/
 data/
+results/
 *.pth
