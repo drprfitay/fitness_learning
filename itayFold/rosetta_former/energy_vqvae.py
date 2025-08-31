@@ -3,6 +3,43 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class GumbelQuantize(nn.Module):
+    """
+    Gumbel Softmax trick quantizer
+    Categorical Reparameterization with Gumbel-Softmax, Jang et al. 2016
+    https://arxiv.org/abs/1611.01144
+    """
+    def __init__(self, num_embeddings, embedding_dim, straight_through=False):
+        super().__init__()
+
+        self.embedding_dim = embedding_dim
+        self.n_embed = num_embeddings
+
+        self.straight_through = straight_through
+        self.temperature = 1.0
+        self.kld_scale = 5e-5
+
+        self.num_hiddens=embedding_dim
+        self.proj = nn.Conv1d(self.num_hiddens, num_embeddings, 1)
+        self.embed = nn.Embedding(num_embeddings, embedding_dim)
+        
+
+    def forward(self, z):
+
+        # force hard = True when we are in eval mode, as we must quantize
+        hard = self.straight_through if self.training else True
+
+        logits = self.proj(torch.transpose(z.to(torch.float), 1, 2))
+        soft_one_hot = F.gumbel_softmax(logits, tau=self.temperature, dim=1, hard=hard)
+        z_q = torch.einsum('b n s, n d -> b d s', soft_one_hot, self.embed.weight).transpose(1, 2)
+        
+        # + kl divergence to the prior loss
+        qy = F.softmax(logits, dim=1)
+        diff = self.kld_scale * torch.sum(qy * torch.log(qy * self.n_embed + 1e-10), dim=1).mean()
+
+        ind = soft_one_hot.argmax(dim=1)
+        return z_q, diff, ind
+    
 class VectorQuantizer(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, commitment_cost, dtype=torch.double):
         super(VectorQuantizer, self).__init__()
@@ -73,7 +110,8 @@ class  EncoderEnergyVQVAE(nn.Module):
             for i in range(0, n_blocks)])
         
         self.vq_proj_layer = nn.Linear(d_model, d_out, dtype=dtype)
-        self.vq_layer = VectorQuantizer(num_embeddings, d_out, commitment_cost)
+        #self.vq_layer = VectorQuantizer(num_embeddings, d_out, commitment_cost)
+        self.vq_layer = GumbelQuantize(num_embeddings, d_out)
         
     
     def forward(self, x):
@@ -139,7 +177,7 @@ class DecoderEnergyVQVAE(nn.Module):
             x = self.embedding(x)
             x =  x.squeeze()
         else:
-            x = self.vq_proj_layer(x)
+            x = self.vq_proj_layer(x.to(torch.double))
             
         for block in self.decoding_blocks:
             x = block(x)
@@ -184,7 +222,7 @@ class EnergyVQVAE(nn.Module):
         else:
             x_recon = self.decoder_net(z_q)
 
-        return x_recon, vq_loss
+        return x_recon, vq_loss, encoding_ind
 
 
 
