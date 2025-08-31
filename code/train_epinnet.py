@@ -1111,7 +1111,7 @@ def train_msa_backbone(
             logits = model(masked_sequence)
 
             # Get the ground truth labels on masked positiosn
-            gt_labels = (((torch.ones(x.shape) - mask_pos_matrix) * -66) + (x * mask_pos_matrix)).view(-1)
+            gt_labels = (((torch.ones(x.shape, device=device) - mask_pos_matrix) * -66) + (x * mask_pos_matrix)).view(-1)
             total_loss = ce_loss_fn(logits.view(-1, len(model.vocab)), gt_labels.to(torch.long))
 
             epoch_loss += total_loss.item()
@@ -1575,6 +1575,7 @@ def train_evaluate_msa_backbone():
     )
 
     if config["train"]:
+        model.train()
         msa_backbone_model = train_msa_backbone(
                 plm_name=plm_name,
                 train_test_dataset=train_test_dataset,
