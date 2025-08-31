@@ -1575,7 +1575,7 @@ def train_evaluate_msa_backbone():
     )
 
     if config["train"]:
-        model.train()
+        msa_backbone_model.train()
         msa_backbone_model = train_msa_backbone(
                 plm_name=plm_name,
                 train_test_dataset=train_test_dataset,
