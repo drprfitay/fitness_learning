@@ -1095,9 +1095,12 @@ def train_msa_backbone(
         for step, batch in enumerate(train_loader):
             x = batch[0].to(device)
             y = batch[1].to(device)                  
-
-            ranges = mine_ranges(train_test_dataset.train_dataset.sequence_dataframe["pad_regions"].iloc[y.numpy()].to_list(), y.numpy())
-            
+            # Ensure y is on CPU before converting to numpy, for CUDA compatibility
+            y_cpu = y.detach().cpu().numpy()
+            ranges = mine_ranges(
+                train_test_dataset.train_dataset.sequence_dataframe["pad_regions"].iloc[y_cpu].to_list(),
+                y_cpu
+            )
             # Apply random noise to the sequence
             mask_pos_matrix = torch.stack([torch.nn.functional.one_hot(noise_schedule(rng), x.shape[1]).sum(dim=0) for rng in ranges], dim=0)
             mask_pos_matrix = mask_pos_matrix.to(device)
