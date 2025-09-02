@@ -18,7 +18,7 @@ llm_data = {"flat": {"df": pd.read_csv("./flat_vs_mean_data/flat.csv"),
                      "emb": torch.load("./flat_vs_mean_data/mean_emb.pt")}}
 llm_names = ["flat", "mean"]
 
-for i in range(1,4):
+for i in range(1,6):
     results_dict = {}
     for llm_name in llm_names:
         sorted_emb = llm_data[llm_name]["emb"]
