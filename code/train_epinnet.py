@@ -1225,8 +1225,9 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
 
     hh = model(x)
 
-    emb = torch.nn.functional.normalize(hh[:, torch.tensor(pos_to_use), :], dim=1).mean(dim=1)
-    emb = torch.nn.functional.normalize(emb, dim=1)
+    emb = hh[:, torch.tensor(pos_to_use), :].flatten(start_dim=1)
+    #emb = torch.nn.functional.normalize(hh[:, torch.tensor(pos_to_use), :], dim=1).mean(dim=1)
+    #emb = torch.nn.functional.normalize(emb, dim=1)
 
     if "trip_loss" not in agg_dict.keys():
         agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float, device=torch.device("cpu"))
