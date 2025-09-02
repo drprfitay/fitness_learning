@@ -23,6 +23,9 @@ for i in range(1,4):
     for llm_name in llm_names:
         sorted_emb = llm_data[llm_name]["emb"]
         sorted_llm_df = llm_data[llm_name]["df"]
+        sort_idx = np.argsort(sorted_llm_df["indices"])
+        sorted_llm_df = sorted_llm_df.iloc[sort_idx]
+        sorted_emb = sorted_emb[sort_idx]
         llm_subset = (sorted_llm_df["mutations"] <= i).to_numpy()
         X_llm_emb_train = sorted_emb[llm_subset]
         X_llm_emb_test = sorted_emb[~llm_subset]
