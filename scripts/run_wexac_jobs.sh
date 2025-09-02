@@ -24,7 +24,7 @@ PLM_NAME="esm2_t6_8M_UR50D"
 
 # Helper to check for -flat_embeddings in arguments
 for arg in "$@"; do
-    if [ "$arg" == "-flat_embeddings" ]; then
+    if [ "$arg" == "--flat_embeddings" ]; then
         USE_FLAT_EMBEDDINGS=true
     fi
 done
