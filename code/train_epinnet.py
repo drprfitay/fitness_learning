@@ -65,6 +65,7 @@ parser.add_argument("--ref_seq", type=str, help="Reference sequence")
 parser.add_argument("--train_indices", type=int, nargs='+', help="List of train indices")
 parser.add_argument("--test_indices", type=int, nargs='+', help="List of test indices")
 parser.add_argument("--pos_to_use", default=None, type=int, nargs='+', help="List of positions to use")
+parser.add_argument("--flat_embeddings", type=lambda x: (str(x).lower() == 'true'), help="Whether to use flat embeddings (True/False)")
 parser.add_argument("--load_weights", type=lambda x: (str(x).lower() == 'true'), help="Whether to load weights (True/False)")
 parser.add_argument("--train", type=lambda x: (str(x).lower() == 'true'), help="Whether to train (True/False)")
 parser.add_argument("--train_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse train indices (True/False)")
@@ -1225,9 +1226,11 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
 
     hh = model(x)
 
-    emb = hh[:, torch.tensor(pos_to_use), :].flatten(start_dim=1)
-    #emb = torch.nn.functional.normalize(hh[:, torch.tensor(pos_to_use), :], dim=1).mean(dim=1)
-    #emb = torch.nn.functional.normalize(emb, dim=1)
+    if config["flat_embeddings"]:
+        emb = hh[:, torch.tensor(pos_to_use), :].flatten(start_dim=1)
+    else:
+        emb = torch.nn.functional.normalize(hh[:, torch.tensor(pos_to_use), :], dim=1).mean(dim=1)
+        emb = torch.nn.functional.normalize(emb, dim=1)
 
     if "trip_loss" not in agg_dict.keys():
         agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float, device=torch.device("cpu"))

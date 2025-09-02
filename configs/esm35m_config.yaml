@@ -31,6 +31,7 @@ evaluate_train: False
 evaluate_test: False
 train_drop_tokens: True
 inference_drop_tokens: False
+flat_embeddings: False
 
 
 # Integers
