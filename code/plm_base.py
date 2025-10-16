@@ -19,13 +19,10 @@ import sys, os
 import torch
 import torch.nn.functional as F
 import loralib as lora
-import scipy.stats
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import einops
-import yaml
-import argparse
+
 
 from esm_smart_dataset import *
 from sequence_space_utils import *
@@ -33,6 +30,8 @@ from sequence_space_utils import *
 from random import sample
 from math import ceil
 from collections import OrderedDict
+
+from transformers import BertModel, BertTokenizer
 
 
 global is_init
@@ -115,6 +114,67 @@ def plm_init(PLM_BASE_PATH):
     global is_init
     is_init = True
     
+    supported_ablang_models = ["igbert"]
+
+    def load_ablang_model_and_alphabet(model_name):
+        if model_name not in supported_ablang_models:
+            raise BaseException("Unsupported model %s, model must be in: %s" %\
+                                  (model_name, ", ".join(supported_ablang_models)))
+
+
+        abland_transformers_kwargs_dictionary = {
+            "igbert": {
+                "tokenizer_kwargs": {
+                    "do_lower_case": False,
+                },
+                "model_kwargs": {
+                    "add_pooling_layer": False
+                },
+                "name": "Exscientia/IgBert"
+                }
+        }
+        
+        model = BertModel.from_pretrained(abland_transformers_kwargs_dictionary[model_name]["name"], 
+                                         **abland_transformers_kwargs_dictionary[model_name]["model_kwargs"])
+                                         
+        tokenizer = BertTokenizer.from_pretrained(abland_transformers_kwargs_dictionary[model_name]["name"],
+                                                  **abland_transformers_kwargs_dictionary[model_name]["tokenizer_kwargs"])
+
+        def get_ablang_model():
+            return model
+        
+        def get_ablang_tokenizer():
+            return tokenizer
+        
+        def get_embeddings():
+            return model.embeddings
+        
+        def get_n_layers():
+            return len(model.encoder.layer)
+            
+        def get_token_vocab_dim():
+            V, abland_d_model = model.embeddings.word_embeddings.weight.size()
+            all_toks = tokenizer.vocab
+            return all_toks, abland_d_model
+        
+        def forward_func(x, attention_mask=None):
+            # You can add an attention mask, but in our case we don't need it
+            if attention_mask is not None:
+                forward = model.forward(x, attention_mask=attention_mask)
+            else:
+                forward = model.forward(x)
+            hh = forward.last_hidden_state
+            logits = None # TODO: add logits
+            return(logits, hh)                                
+                    
+        return PlmWrapper(get_ablang_model,
+                          get_ablang_tokenizer,
+                          get_embeddings,
+                          get_n_layers,        
+                          get_token_vocab_dim,
+                          forward_func)
+
+
     supported_esm2_models =\
             ["esm1_t34_670M_UR50S",
              "esm1_t34_670M_UR50D",
@@ -183,9 +243,7 @@ def plm_init(PLM_BASE_PATH):
             forward = model.forward(x, repr_layers=[model.num_layers])
             hh = forward["representations"][model.num_layers]
             logits = forward["logits"]
-            return(logits, hh)
-            
-                    
+            return(logits, hh)                                
                     
         return PlmWrapper(get_esm_model,
                           get_esm_tokenizer,
@@ -198,6 +256,9 @@ def plm_init(PLM_BASE_PATH):
     def load_model_internal(model_name):
         if model_name in supported_esm2_models:
             return load_esm2_model_and_alphabet(model_name)
+
+        if model_name in supported_ablang_models:
+            return load_ablang_model_and_alphabet(model_name)
         
     internal_wrapper["load_model"] = load_model_internal
         

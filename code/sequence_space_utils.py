@@ -191,7 +191,7 @@ def get_one_hot_encoding(sdf, first_col, last_col):
     si = np.where(sdf.columns == first_col)[0][0]
     ei = np.where(sdf.columns == last_col)[0][0]
     
-    one_hot_encoding = torch.from_numpy(pd.get_dummies(sdf[sdf.columns[si:ei]]).to_numpy()).to(torch.int64)
+    one_hot_encoding = torch.from_numpy(pd.get_dummies(sdf[sdf.columns[si:(ei+1)]]).to_numpy()).to(torch.int64)
 
     return(one_hot_encoding)
 
@@ -237,11 +237,9 @@ def get_non_alignment_regions(s):
         return ""
     out = []
     for idx, (st, en) in enumerate(regions):
-        if idx == 0:
             out.append(f"{st}_{en}")
-        else:
-            out.append(f"x{st}x{en}")
-    return "".join(out)
+
+    return "x".join(out)
 
 # Example usage:
 # s = "---XBC--X--A--XXX--"

@@ -47,65 +47,66 @@ import yaml
 # save_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/one_shot/"
 # weights_path: "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/pretraining/triplet_loss_backbones/final_model.pt"
 
-parser = argparse.ArgumentParser(description="Train and evaluate EpiNNet or PLM models.")
-parser.add_argument("--config",type=str,default="config.yaml",help="Path to the YAML configuration file (default: config.yaml)")
-parser.add_argument("--root_path", type=str, help="Root path for the project")
-parser.add_argument("--dataset_path", type=str, help="Path to the dataset CSV file")
-parser.add_argument("--save_path", type=str, help="Path to save outputs")
-parser.add_argument("--weights_path", type=str, help="Path to model weights")
-parser.add_argument("--model_type", type=str, help="Type of model to use (e.g., 'plm', 'epinnet')")
-parser.add_argument("--train_type", type=str, help="Type of training to use (e.g., 'direct_mlp')")
-parser.add_argument("--nmuts_column", type=str, help="Column name for number of mutations")
-parser.add_argument("--sequence_column_name", type=str, help="Column name for sequence")
-parser.add_argument("--activity_column_name", type=str, help="Column name for activity")
-parser.add_argument("--first_column_name", type=str, help="First column name for encoding")
-parser.add_argument("--last_column_name", type=str, help="Last column name for encoding")
-parser.add_argument("--plm_name", type=str, help="PLM model name")
-parser.add_argument("--ref_seq", type=str, help="Reference sequence")
-parser.add_argument("--train_indices", type=int, nargs='+', help="List of train indices")
-parser.add_argument("--test_indices", type=int, nargs='+', help="List of test indices")
-parser.add_argument("--pos_to_use", default=None, type=int, nargs='+', help="List of positions to use")
-parser.add_argument("--flat_embeddings", type=lambda x: (str(x).lower() == 'true'), help="Whether to use flat embeddings (True/False)")
-parser.add_argument("--load_weights", type=lambda x: (str(x).lower() == 'true'), help="Whether to load weights (True/False)")
-parser.add_argument("--train", type=lambda x: (str(x).lower() == 'true'), help="Whether to train (True/False)")
-parser.add_argument("--train_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse train indices (True/False)")
-parser.add_argument("--test_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse test indices (True/False)")
-parser.add_argument("--evaluate_train", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on train set (True/False)")
-parser.add_argument("--evaluate_test", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on test set (True/False)")
-parser.add_argument("--train_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during training (True/False)")
-parser.add_argument("--inference_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during inference (True/False)")
-parser.add_argument("--lr", type=float, help="Learning rate")
-parser.add_argument("--batch_size", type=int, help="Batch size")
-parser.add_argument("--iterations", type=int, help="Number of iterations")
 
-# After loading config, overwrite config values with any provided CLI args
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train and evaluate EpiNNet or PLM models.")
+    parser.add_argument("--config",type=str,default="config.yaml",help="Path to the YAML configuration file (default: config.yaml)")
+    parser.add_argument("--root_path", type=str, help="Root path for the project")
+    parser.add_argument("--dataset_path", type=str, help="Path to the dataset CSV file")
+    parser.add_argument("--save_path", type=str, help="Path to save outputs")
+    parser.add_argument("--weights_path", type=str, help="Path to model weights")
+    parser.add_argument("--model_type", type=str, help="Type of model to use (e.g., 'plm', 'epinnet')")
+    parser.add_argument("--train_type", type=str, help="Type of training to use (e.g., 'direct_mlp')")
+    parser.add_argument("--nmuts_column", type=str, help="Column name for number of mutations")
+    parser.add_argument("--sequence_column_name", type=str, help="Column name for sequence")
+    parser.add_argument("--activity_column_name", type=str, help="Column name for activity")
+    parser.add_argument("--first_column_name", type=str, help="First column name for encoding")
+    parser.add_argument("--last_column_name", type=str, help="Last column name for encoding")
+    parser.add_argument("--plm_name", type=str, help="PLM model name")
+    parser.add_argument("--ref_seq", type=str, help="Reference sequence")
+    parser.add_argument("--train_indices", type=int, nargs='+', help="List of train indices")
+    parser.add_argument("--test_indices", type=int, nargs='+', help="List of test indices")
+    parser.add_argument("--pos_to_use", default=None, type=int, nargs='+', help="List of positions to use")
+    parser.add_argument("--flat_embeddings", type=lambda x: (str(x).lower() == 'true'), help="Whether to use flat embeddings (True/False)")
+    parser.add_argument("--load_weights", type=lambda x: (str(x).lower() == 'true'), help="Whether to load weights (True/False)")
+    parser.add_argument("--train", type=lambda x: (str(x).lower() == 'true'), help="Whether to train (True/False)")
+    parser.add_argument("--train_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse train indices (True/False)")
+    parser.add_argument("--test_indices_rev", type=lambda x: (str(x).lower() == 'true'), help="Reverse test indices (True/False)")
+    parser.add_argument("--evaluate_train", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on train set (True/False)")
+    parser.add_argument("--evaluate_test", type=lambda x: (str(x).lower() == 'true'), help="Evaluate on test set (True/False)")
+    parser.add_argument("--train_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during training (True/False)")
+    parser.add_argument("--inference_drop_tokens", type=lambda x: (str(x).lower() == 'true'), help="Whether to drop tokens during inference (True/False)")
+    parser.add_argument("--lr", type=float, help="Learning rate")
+    parser.add_argument("--batch_size", type=int, help="Batch size")
+    parser.add_argument("--iterations", type=int, help="Number of iterations")
 
-args = parser.parse_args()
-config_path = args.config
+    # After loading config, overwrite config values with any provided CLI args
 
-#config_path = "msa_backbone_config.yaml"
-# Load configuration from YAML file
-with open(config_path, "r") as f:
-    config = yaml.safe_load(f)
+    args = parser.parse_args()
+    config_path = args.config
 
-# Overwrite config values with any provided CLI args (if not None), dynamically
-for key, val in vars(args).items():
-    if key == "config":
-        continue  # skip config path itself
+    #config_path = "msa_backbone_config.yaml"
+    # Load configuration from YAML file
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
 
-    if val is not None:
-        config[key] = val
+    # Overwrite config values with any provided CLI args (if not None), dynamically
+    for key, val in vars(args).items():
+        if key == "config":
+            continue  # skip config path itself
 
-
-if "root_path" in config:
-    for k in list(config.keys()):
-        if k.endswith("_path") and k != "root_path" and config[k] is not None:
-            # Only update if not already an absolute path
-            if not os.path.isabs(str(config[k])):
-                config[k] = os.path.join(config["root_path"], str(config[k]))
+        if val is not None:
+            config[key] = val
 
 
-plm_init(config["root_path"])
+    if "root_path" in config:
+        for k in list(config.keys()):
+            if k.endswith("_path") and k != "root_path" and config[k] is not None:
+                # Only update if not already an absolute path
+                if not os.path.isabs(str(config[k])):
+                    config[k] = os.path.join(config["root_path"], str(config[k]))
+
+    plm_init(config["root_path"])
 
 def pairwise_cosine(X):
     X = F.normalize(X, dim=-1)
@@ -144,7 +145,6 @@ def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbo
         indices = ~indices
             
     return(np.where(indices)[0].tolist())
-
     
 class EpiNNet(torch.nn.Module):
     def __init__(self, 
@@ -156,7 +156,8 @@ class EpiNNet(torch.nn.Module):
                  use_bias=True,
                  activation_on_last_layer=False,
                  device=torch.device("cpu"),                 
-                 dtype=torch.double):
+                 dtype=torch.double,
+                 **kwargs):
         super().__init__()
         
         sequence_list = []
@@ -192,7 +193,6 @@ class EpiNNet(torch.nn.Module):
     def forward(self, x):
         return self.sequential(x)
             
-
 class SeqMLP(torch.nn.Module):
     def __init__(self, 
                  encoding_type,
@@ -201,7 +201,7 @@ class SeqMLP(torch.nn.Module):
                  plm_name=None,                         
                  hidden_layers=[1024],
                  activation="sigmoid",
-                 opmode="mean",
+                 opmode="pos",
                  layer_norm=True,
                  use_bias=True,
                  activation_on_last_layer=False,
@@ -267,7 +267,6 @@ class SeqMLP(torch.nn.Module):
     def encode(self, *args):
         return self.encode_int(*args)
         
-
 def select_design_pos(seq):
     return([seq[21], seq[23], seq[24]])
 
@@ -282,7 +281,7 @@ class plmTrunkModel(torch.nn.Module):
                  plm_name,
                  hidden_layers=[1024],
                  activation="relu",
-                 opmode="mean",
+                 opmode="pos",
                  emb_only=True,
                  logits_only=False,
                  layer_norm=True,
@@ -411,7 +410,6 @@ class plmTrunkModel(torch.nn.Module):
     def forward(self, x):
         return self.final_forward(x)
 
-
 class EpiNNetDataset(Dataset):
     def __init__(self,
                  dataset_path,
@@ -501,8 +499,7 @@ class EpiNNetDataset(Dataset):
     def __len__(self):
         return self.size
 
-
-class EpiNNetActivityTrainTest(Dataset):
+class EpiNNetActivityDataset(Dataset):
         def __init__(self,
                      train_project_name,
                      evaluation_path,
@@ -657,7 +654,12 @@ class EpiNNetActivityTrainTest(Dataset):
                     if idx % ((len(dataloader) // 20) + 1) == 0:
                         print(f"[DEBUG] Progress: {idx}/{len(dataloader)} batches evaluated")
                         
-                    aggregated_evaluated_data = eval_func(model, data, aggregated_evaluated_data, self.device)
+                    aggregated_evaluated_data = eval_func(model, 
+                                                          data, 
+                                                          aggregated_evaluated_data, 
+                                                          self.device, 
+                                                          batch_idx=idx,
+                                                          dataset=working_dataset)
                     
                 evaluated_data_to_save = finalize_func(aggregated_evaluated_data, working_dataset)
                 evaluated_data_to_save["indices"] = indices_to_save
@@ -693,7 +695,6 @@ class EpiNNetActivityTrainTest(Dataset):
                     else:
                         # Optionally, skip or print warning for unknown types
                         print(f"Warning: Could not save {key}, unknown type {type(value)}")
-
             
 def train_plm_triplet_model(
     plm_name: str,
@@ -706,7 +707,7 @@ def train_plm_triplet_model(
     lr=4e-6,
     weight_decay=0.1,
     encoding_identifier=None,
-    opmode="mean",
+    opmode="pos",
     hidden_layers=[1024],
     activation="sigmoid",
     train_type="triplet",
@@ -858,7 +859,6 @@ def train_plm_triplet_model(
     print(f"Model saved to {save_path}")
     return model
 
-
 def train_epinnet(
     train_test_dataset,
     save_path: str,
@@ -976,7 +976,6 @@ def train_epinnet(
     print(f"Model saved to {save_path}")
     return model
 
-
 def train_msa_backbone(
     plm_name: str,
     save_path: str,
@@ -988,7 +987,7 @@ def train_msa_backbone(
     lr=4e-6,
     weight_decay=0.1,
     encoding_identifier=None,
-    opmode="mean",
+    opmode="pos",
     hidden_layers=[1024],
     activation="sigmoid",
     layer_norm=False,
@@ -1150,9 +1149,8 @@ def train_msa_backbone(
     print(f"Model saved to {save_path}")
     return model
 
-
 @torch.no_grad()
-def epinnet_evaluate_function(model, data, aggregated_evaluated_data, device=torch.device("cpu")):
+def epinnet_evaluate_function(model, data, aggregated_evaluated_data, device=torch.device("cpu"), **kwargs):
     x = data[0].to(device)
     y = data[1].to(device)
     y = torch.nn.functional.one_hot(
@@ -1216,7 +1214,7 @@ def epinnet_finalize_function(aggregated_evaluated_data, dataset):
     }
 
 @torch.no_grad
-def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu")):
+def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu"), **kwargs):
     margin = 1
     pos_to_use = config["pos_to_use"]
     x = data[0].to(device)
@@ -1347,7 +1345,6 @@ def embeddings_finalize_function(agg_dict, dataset):
 
     return agg_dict
 
-
 # Old code (now replaced by YAML config):
 # root_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning"
 # dataset_path = f"{root_path}/data/configuration/fixed_unique_gfp_sequence_dataset_full_seq.csv"
@@ -1385,7 +1382,7 @@ def train_evaluate_plms():
     
     model = plmTrunkModel(
         plm_name=plm_name,
-        opmode="mean",
+        opmode="pos",
         emb_only = emb_only,
         hidden_layers=[516,256],
         activation="relu",
@@ -1401,7 +1398,7 @@ def train_evaluate_plms():
         backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
         model.plm.load_state_dict(backbone_weights, strict=True)
 
-    train_test_dataset = EpiNNetActivityTrainTest(
+    train_test_dataset = EpiNNetActivityDataset(
         train_project_name="triplet_training",
         evaluation_path=config["save_path"],
         dataset_path=config["dataset_path"],
@@ -1490,7 +1487,7 @@ def train_evaluate_epinnet():
         backbone_weights = torch.load(config["weights_path"], map_location=device)
         epinnet_model.load_state_dict(backbone_weights)
 
-    train_test_dataset = EpiNNetActivityTrainTest(
+    train_test_dataset = EpiNNetActivityDataset(
         train_project_name="triplet_training",
         evaluation_path=config["save_path"],
         dataset_path=config["dataset_path"],
@@ -1530,7 +1527,6 @@ def train_evaluate_epinnet():
                                     eval_train=config["evaluate_train"],
                                     eval_test=config["evaluate_test"])
 
-
 def train_evaluate_msa_backbone():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1545,7 +1541,7 @@ def train_evaluate_msa_backbone():
     msa_backbone_model =\
      plmTrunkModel(
         plm_name=plm_name,
-        opmode="mean",
+        opmode="pos",
         emb_only = False,
         logits_only = True,
         hidden_layers=[516,256],
@@ -1560,8 +1556,8 @@ def train_evaluate_msa_backbone():
         seq = seq.replace("-", "<pad>")
         return msa_backbone_model.tokenizer.encode(seq)
 
-    # Prepare dataset (assuming similar interface as EpiNNetActivityTrainTest)
-    train_test_dataset = EpiNNetActivityTrainTest(
+    # Prepare dataset (assuming similar interface as EpiNNetActivityDataset)
+    train_test_dataset = EpiNNetActivityDataset(
         train_project_name="triplet_training",
         evaluation_path=config["save_path"],
         dataset_path=config["dataset_path"],
@@ -1602,15 +1598,14 @@ def train_evaluate_msa_backbone():
     #         eval_test=config.get("evaluate_test", False)
     #     )
 
-
-if config["model_type"] == "plm":
-    if config["train_type"] == "msa_backbone":
-        train_evaluate_msa_backbone()
-    else:
-        train_evaluate_plms()
-
-elif config["model_type"] == "epinnet":
-    train_evaluate_epinnet()
+if __name__ == "__main__":
+    if config["model_type"] == "plm":
+        if config["train_type"] == "msa_backbone":
+            train_evaluate_msa_backbone()
+        else:
+            train_evaluate_plms()
+    elif config["model_type"] == "epinnet":
+        train_evaluate_epinnet()
 
 
 
