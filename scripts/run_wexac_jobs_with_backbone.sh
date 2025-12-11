@@ -57,7 +57,7 @@ TEST_MUTS_PATH="${TEST_INDICES_CSV//,/'x'}"
 CONFIG_FILE="../configs/${ESM_DIR}_msa_backbone_config.yaml"
 
 # Save path for zero-shot over backbone (always used)
-SAVE_PATH="pretraining/msa_backbone/${ESM_DIR}/zero_shot/train_${TRAIN_MUTS_PATH}_test_${TEST_MUTS_PATH}"
+SAVE_PATH="pretraining/msa_backbone_no_norm/${ESM_DIR}/zero_shot/train_${TRAIN_MUTS_PATH}_test_${TEST_MUTS_PATH}"
 WEIGHTS_PATH="pretraining/msa_backbone/${ESM_DIR}/final_model.pt"
 EXTRA_ARGS="--load_weights True --weights_path \"$WEIGHTS_PATH\""
 SCRIPT_NAME="tmp/run_epinnet_${TRAIN_MUTS_PATH}_${TEST_MUTS_PATH}_backbone_${ESM_DIR}_$$.sh"

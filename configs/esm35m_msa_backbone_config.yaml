@@ -1,15 +1,16 @@
 root_path: "/home/labs/fleishman/itayta/fitness/"
-dataset_path: "data/pretraining_msa_csv/gfp_alm.csv"
-save_path: "pretraining/msa_backbone/gfp_1750/"
-weights_path: "pretraining/triplet_loss_backbones/final_model.pt"
+dataset_path: "retraining_esm/gfp_dataset.csv"
+save_path: "pretraining/esm35m/"
+weights_path: "pretraining/msa_backbone/gfp_1750/checkpoints/chekcpoint_model_2000.pt"
 
 
 model_type: "plm"
-train_type: "msa_backbone"
-# Strings
+train_type: "triplet"
 
-sequence_column_name: "sequence"
-activity_column_name: "index"
+# Strings
+nmuts_column: "num_muts"
+sequence_column_name: "full_seq"
+activity_column_name: "inactive"
 first_column_name: "L42"
 last_column_name: "V224"
 plm_name: "esm2_t12_35M_UR50D"
@@ -17,23 +18,23 @@ ref_seq: "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLSYGVQC
 
 
 # Lists
-train_indices: [1,2,3]
-test_indices: [4]
+train_indices: [1,2,3,4]
+test_indices: [5]
 pos_to_use: [42, 44, 61, 65, 68, 69, 72, 94, 108, 112, 121, 145, 148, 150, 167, 181, 185, 203, 205, 220, 222, 224]
 
 # Booleans
-load_weights: False
+load_weights: True
 train: True
 train_indices_rev: False
 test_indices_rev: False
-evaluate_train: True 
-evaluate_test: True
+evaluate_train: False 
+evaluate_test: False
 train_drop_tokens: True
 inference_drop_tokens: False
 
 
 # Integers
-lr: 1e-6
-batch_size: 32
-iterations: 20000
+lr: 4e-6
+batch_size: 32 
+iterations: 10000
 
