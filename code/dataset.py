@@ -61,16 +61,16 @@ class PREDataset(Dataset):
             
             
             if self.cache and tokenized_sequences_filename in cached_files:
+                print("[INFO] Loading cached file %s" % tokenized_sequences_filename)
                 self.encoded_tensor = torch.load("%s/misc/%s" % (self.cache_path, tokenized_sequences_filename))
             else:
                 print("[INFO] Tokenizing sequences, this may take a while")                              
                 encoded_sequences = [torch.tensor(self.encoding_function(seq)) for seq in self.sequence_dataframe[self.sequence_column_name].to_list()]
                 self.encoded_tensor = torch.stack(encoded_sequences, dim=0)
                 
-            if self.cache:        
-                print("[INFO] Caching \n\t(1) %s" % (tokenized_sequences_filename))
-                torch.save(self.encoded_tensor, "%s/misc/%s" % \
-                           (self.cache_path, tokenized_sequences_filename))
+                if self.cache:
+                    torch.save(self.encoded_tensor, "%s/misc/%s" % \
+                            (self.cache_path, tokenized_sequences_filename))
                     
                     
         else:

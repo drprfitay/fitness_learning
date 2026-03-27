@@ -25,7 +25,7 @@ from random import sample
 from math import ceil
 from collections import OrderedDict
 from transformers import BertModel, BertTokenizer
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, T5Tokenizer
 from tokenizers import Tokenizer
 
 global is_init
@@ -123,8 +123,8 @@ def plm_init(PLM_BASE_PATH):
                              "esm1v_t33_650M_UR90S_5", "esm_if1_gvp4_t16_142M_UR50","esm2_t6_8M_UR50D",
                              "esm2_t12_35M_UR50D", "esm2_t30_150M_UR50D", "esm2_t33_650M_UR50D",
                              "esm2_t36_3B_UR50D", "esm2_t48_15B_UR50D"]
-    supported_progen_models = ["progen2-small"]
-    supported_transformers_pretrained_models = ["Rostlab/prot_bert", "ElnaggarLab/ankh3-large"]          
+    supported_progen_models = ["progen2-small", "progen2-medium"]
+    supported_transformers_pretrained_models = ["prot_bert", "ankh3-large"]          
 
     def load_ablang_model_and_alphabet(model_name):
         if model_name not in supported_ablang_models:
@@ -306,21 +306,30 @@ def plm_init(PLM_BASE_PATH):
 
         if model_name not in supported_transformers_pretrained_models:
             raise BaseException("Unsupported model %s, model must be in: %s" %\
-                                  (model_name, ", ".join(supported_transformers_pretrained_models)))        
+                                  (model_name, ", ".join(supported_transformers_pretrained_models)))    
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name, token=False)
-        model = AutoModel.from_pretrained(model_name, token=False)
+        full_name_dict = {"prot_bert": "Rostlab/prot_bert", "ankh3-large": "ElnaggarLab/ankh3-large"}    
+        
+        model = AutoModel.from_pretrained(full_name_dict[model_name], token=False)
 
         def get_encoder(model_name, model):
-            if model_name == "Rostlab/prot_bert":
-                return (model, model.embeddings.word_embeddings, model.encoder.layer, True)
-            elif model_name == "ElnaggarLab/ankh3-large":
-                return (model.encoder, model.encoder.embed_tokens, model.encoder.block, False)
+            if model_name == "prot_bert":
+                return (model, 
+                        model.embeddings.word_embeddings, 
+                        model.encoder.layer, 
+                        True,
+                        AutoTokenizer.from_pretrained(full_name_dict[model_name], token=False))
+            elif model_name == "ankh3-large":
+                return (model.encoder, 
+                        model.encoder.embed_tokens, 
+                        model.encoder.block, 
+                        False,
+                        T5Tokenizer.from_pretrained(full_name_dict[model_name], token=False, legacy=False))
             else:
                 raise BaseException("Unsupported model %s, model must be in: %s" %\
                                   (model_name, ", ".join(supported_transformers_pretrained_models)))
         
-        encoder, embeddings, layers, add_space_to_seq = get_encoder(model_name, model)
+        encoder, embeddings, layers, add_space_to_seq, tokenizer = get_encoder(model_name, model)
         N_layers = len(layers)
 
         def get_transformer_encoder_model():
@@ -348,7 +357,7 @@ def plm_init(PLM_BASE_PATH):
             if x.dim() == 1:
                 x = x.unsqueeze(0)
 
-            attention_mask = torch.ones(x.shape)
+            attention_mask = torch.ones(x.shape).to(x.device)
             forward = encoder(input_ids=x, attention_mask=attention_mask)
             hh = forward.last_hidden_state
 

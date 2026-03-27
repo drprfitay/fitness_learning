@@ -14,7 +14,6 @@ import re
 
 CONDA_ENV_NAME = "esm_env"
 KEY_DATASET_LOG_PATH = "all_keydatasets_log.csv"
-CHUNK_SIZE = 500
 
 def generate_random_hash(length=32):
     chars = string.ascii_letters + string.digits
@@ -61,14 +60,14 @@ def ab_run_dataset(model, dataset_path, indices=None, heavy_or_light_only=None):
         ab_embeddings_finalize_function,
         eval_train=True,
         eval_test=False,
-        internal_batch_size=20
+        internal_batch_size=args.internal_batch_size
     )
 
 def run_dataset(model, model_name, dataset_path, evaluation_path, sequence_column_name, indices=None, **kwargs):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
 
     print(f"\t\t[INFO] Using device: {device}")
-    print(f"\t\t[INFO] Running dataset: {dataset_path} with model: {model_name} and indices: {indices}")
+    print(f"\t\t[INFO] Running dataset: {dataset_path} with model: {model_name} and indices: {indices[0]}-{indices[-1]}")
 
     if indices is not None:
         indices_str = "%s_%s" % (indices[0], indices[-1] + 1)
@@ -98,6 +97,7 @@ def run_dataset(model, model_name, dataset_path, evaluation_path, sequence_colum
     )
 
     has_antibodies = 'antibodies' in kwargs
+    internal_batch_size = kwargs.get("internal_batch_size", 20)
 
     embedding_function = embeddings_evaluate_function if not has_antibodies else ab_embedding_evaluate_heavy_or_light_chain
     finalize_function = embeddings_finalize_function if not has_antibodies else ab_embeddings_finalize_function
@@ -108,7 +108,7 @@ def run_dataset(model, model_name, dataset_path, evaluation_path, sequence_colum
         finalize_function,
         eval_train=True,
         eval_test=False,
-        internal_batch_size=20,
+        internal_batch_size=internal_batch_size,
         **kwargs)
 
 def _lock_wrapper(file_name):
@@ -406,17 +406,20 @@ def embed_parallel(args):
     N_sequences = len(df)
 
     print(f"[INFO] Creating jobs in: {jobs_path}")
-    num_chunks = N_sequences // CHUNK_SIZE
+    print(f"[INFO] JOBS PATH: {jobs_path}")
+    
+    chunk_size = args.chunk_size
+    num_chunks = N_sequences // chunk_size
 
     key_dataset = []
 
     for i in range(num_chunks + 1):
-        start_idx = i * CHUNK_SIZE
-        end_idx = start_idx + CHUNK_SIZE
+        start_idx = i * chunk_size
+        end_idx = start_idx + chunk_size
         if end_idx > N_sequences:
             end_idx = N_sequences
         indices = f"{start_idx}_{end_idx}"
-        print(indices)
+        
         # Generate job_path as in example code
         chunk_job_path = os.path.join(jobs_path, "jobs", generate_random_hash() + ".job")
 
@@ -614,6 +617,8 @@ def main():
     parser.add_argument('--positions_to_embed', type=int, nargs='+')
     parser.add_argument('--dataset_file', type=str)
     parser.add_argument('--n_workers', default=5,type=int)
+    parser.add_argument('--chunk_size', default=500, type=int)
+    parser.add_argument('--internal_batch_size', default=20, type=int)
     parser.add_argument('--sequences', nargs='+')
     parser.add_argument('--print_done_jobs', action='store_true', default=False)
     parser.add_argument('--execute_after_parallel_generation', action='store_true', default=False)

@@ -33,8 +33,8 @@ def evaluate_classifier(score,
     accuracy = np.sum(predicted_label == gt_label) / len(predicted_label)
     roc = roc_auc_score(gt_label, score)
 
-    ordered_scores = np.argsort(score)[0:1000]
-    top_100_pct = sum(gt_label[ordered_scores] == label_true) / 1000
+    ordered_scores = np.argsort(score)[0:100]
+    top_100_pct = sum(gt_label[ordered_scores] == label_true) / 100
 
     evaluation = {
         "tp" : tp,
@@ -46,7 +46,7 @@ def evaluate_classifier(score,
         "f1" : f1,
         "accuracy" : accuracy,
         "roc" : roc,
-        "top_1000_pct": top_1000_pct
+        "top_100_pct": top_100_pct
     }
     #roc = sklearn.
     return evaluation
@@ -65,7 +65,7 @@ def get_one_hot_encoding(sdf, first_col, last_col):
 
     return(one_hot_encoding)
     
-df = pd.read_csv("data/gfp_dataset_10mut.csv")
+df = pd.read_csv("data/gfp/gfp_dataset_10mut.csv")
 one_hot = get_one_hot_encoding(df, "L42", "V224").numpy()
 si = np.where(df.columns == "L42")[0][0]
 ei = np.where(df.columns == "V224")[0][0]
@@ -82,17 +82,21 @@ embedding_paths = ["%s/data/gfp/embeddings/esm_650m" % base_path,
 classifier_embeddings_path = embedding_paths[1]
 
 
-for sample_size in [100, 500, 1000, 2000, 5000, 10000]:
-
+#for fraction in [0.005, 0.01, 0.0125, 0.02, 0.03, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]:
+for sample_size in [10, 25, 50, 75, 100, 250, 500, 1000, 25000, 5000, 10000, 25000, 50000]:
     across_iterations_llm = []
     across_iterations_ohe = []
 
-    for iter in range(10):
+    #use_fraction = fraction
+    for iter in range(20):
         
         print("Iteration %d" % iter)
         saved_train_parameters = {}
             
-        for n_train in range(1, 11):
+        for n_train in range(1, 10):
+
+            if n_train > 8:
+                use_fraction = 0
 
             ohe_labels = df["inactive"].astype(int).to_numpy()
 
@@ -109,7 +113,7 @@ for sample_size in [100, 500, 1000, 2000, 5000, 10000]:
             assert(sum(indices == train_indices) == len(train_indices))
 
 
-            #n_samples = max(1,int(len(train_indices) * fraction))
+            #n_samples = max(1,int(len(train_indices) * use_fraction))
             n_samples = min(sample_size, len(train_indices)) 
             true_indices = np.where(train_indices)[0]
             sampled_indices = np.random.choice(true_indices, size=n_samples, replace=False)
@@ -153,7 +157,7 @@ for sample_size in [100, 500, 1000, 2000, 5000, 10000]:
             "batch_size": 128,   
             "alpha" : 1,                
             "learning_rate_init" : 1e-3,    
-            "max_iter" :200,
+            "max_iter" :50,
             "random_state" : 4321,                
             "early_stopping" : True,         
             "n_iter_no_change" : 200,         
@@ -169,7 +173,7 @@ for sample_size in [100, 500, 1000, 2000, 5000, 10000]:
 
         print("Fitting MLP over %dx%d ohe to %d labels" % (ohe.shape[0], ohe.shape[1], len((labels))))
 
-        mlp_ohe = MLPClassifier(hidden_layer_sizes=(64,), **mlp_base_parameters)
+        mlp_ohe = MLPClassifier(hidden_layer_sizes=(200,), **mlp_base_parameters)
         mlp_ohe.fit(ohe, labels)
 
 
@@ -182,7 +186,7 @@ for sample_size in [100, 500, 1000, 2000, 5000, 10000]:
         predicted_labels_ohe = []
         
         # evaluation loop
-        for n_train in range(1, 11):
+        for n_train in range(1, 10):
 
             ohe_labels = df["inactive"].astype(int).to_numpy()
 
@@ -239,18 +243,18 @@ for sample_size in [100, 500, 1000, 2000, 5000, 10000]:
         evaluation = evaluate_classifier(all_scores_llm, all_predicted_labels_llm, all_labels_llm)
         print("LLM evaluation: %s" % str(evaluation))
 
-        evaluation["sample_size"] = sample_size
+        evaluation["fraction"] = sample_size
         evaluation["iter"] = iter
         across_iterations_llm.append(evaluation)
 
         evaluation = evaluate_classifier(all_scores_ohe, all_predicted_labels_ohe, all_labels_ohe)
         print("OHE evaluation: %s" % str(evaluation))
-        evaluation["sample_size"] = sample_size
+        evaluation["fraction"] = sample_size
         evaluation["iter"] = iter
         across_iterations_ohe.append(evaluation)
 
         across_iterations_llm_df = pd.DataFrame(across_iterations_llm)
         across_iterations_ohe_df = pd.DataFrame(across_iterations_ohe)
-        across_iterations_llm_df.to_csv("data/s_across_iterations_llm_fraction_%d.csv" % sample_size, index=False)
-        across_iterations_ohe_df.to_csv("data/s_across_iterations_ohe_fraction_%d.csv" % sample_size, index=False)
+        across_iterations_llm_df.to_csv("data/gfp/subsamples/s_across_iterations_llm_fraction_new_new_%d.csv" % sample_size, index=False)
+        across_iterations_ohe_df.to_csv("data/gfp/subsamples/s_across_iterations_ohe_fraction_new_new_%d.csv" % sample_size, index=False)
 

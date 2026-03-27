@@ -199,6 +199,11 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
     margin = 1
     
     x = data[0].to(device)
+
+    print("[DBG]########################")
+    print("x.shape: ", x.shape)
+    print(x.sum(dim=1))
+    print("[DBG]########################")
     y = data[1].to(device)
 
     calc_triplets = "triplet_loss" in kwargs

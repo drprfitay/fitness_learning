@@ -8,6 +8,11 @@ executions/
 rosetta/
 data/
 results/
+notebooks/tmp_files/
+notebooks/results/
+notebooks/refined_figures/
+
+*.svg
 *.pth
 *.pt
 *.csv
