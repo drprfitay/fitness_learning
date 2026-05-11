@@ -171,7 +171,7 @@ def msat_baseline():
                                           get_mutated_position_function=get_mutated_position_function_gfp,
                                           cache=True,
                                           model_name="msa_transformer",
-                                          activity_column_name='is_unsorted',
+                                          label_column_name='is_unsorted',
                                           sequence_column_name="FullSeq",
                                           ref_seq=jonathans_reference_sequence,
                                           labels_dtype=torch.int64)
@@ -248,7 +248,7 @@ def train_msa_transformer():
                                                get_mutated_position_function=get_mutated_position_function_gfp_n2,
                                                cache=True,
                                                model_name="msa_transformer",
-                                               activity_column_name='is_unsorted',
+                                               label_column_name='is_unsorted',
                                                sequence_column_name="FullSeq",
                                                ref_seq=jonathans_reference_sequence,
                                                labels_dtype=torch.int64)
@@ -259,7 +259,7 @@ def train_msa_transformer():
                                                get_mutated_position_function=get_mutated_position_function_gfp,
                                                cache=True,
                                                model_name="msa_transformer",
-                                               activity_column_name='is_unsorted',
+                                               label_column_name='is_unsorted',
                                                sequence_column_name="FullSeq",
                                                ref_seq=jonathans_reference_sequence,
                                                labels_dtype=torch.int64)
@@ -506,7 +506,7 @@ def train_msa_transformer_advanced_mask():
                                                get_mutated_position_function=get_mutated_position_function_gfp_n2,
                                                cache=True,
                                                model_name="msa_transformer",
-                                               activity_column_name='is_unsorted',
+                                               label_column_name='is_unsorted',
                                                sequence_column_name="FullSeq",
                                                ref_seq=jonathans_reference_sequence,
                                                labels_dtype=torch.int64)
@@ -676,7 +676,7 @@ def test_msa_transformer_regular_mask():
     #                                            get_mutated_position_function=get_mutated_position_function_gfp_n2,
     #                                            cache=True,
     #                                            model_name="msa_transformer",
-    #                                            activity_column_name='is_unsorted',
+    #                                            label_column_name='is_unsorted',
     #                                            sequence_column_name="FullSeq",
     #                                            ref_seq=jonathans_reference_sequence,
     #                                            labels_dtype=torch.int64)
@@ -687,7 +687,7 @@ def test_msa_transformer_regular_mask():
                                     get_mutated_position_function=get_mutated_position_function_gfp,
                                     cache=True,
                                     model_name="msa_transformer",
-                                    activity_column_name='is_unsorted',
+                                    label_column_name='is_unsorted',
                                     sequence_column_name="FullSeq",
                                     ref_seq=jonathans_reference_sequence,
                                     labels_dtype=torch.int64)
@@ -853,7 +853,7 @@ def test_msa_transformer_full_partial_mask():
                                       use_full_mask_only=False,
                                       cache=True,
                                       model_name="esm2",
-                                      activity_column_name='is_unsorted',
+                                      label_column_name='is_unsorted',
                                       sequence_column_name="FullSeq",
                                       ref_seq=jonathans_reference_sequence,
                                       labels_dtype=torch.int64)
@@ -1033,7 +1033,7 @@ def test_esm2_full_partial_mask():
                                       use_partial_mask_only=False,
                                       cache=True,
                                       model_name="esm2",
-                                      activity_column_name='is_unsorted',
+                                      label_column_name='is_unsorted',
                                       sequence_column_name="FullSeq",
                                       ref_seq=jonathans_reference_sequence,
                                       labels_dtype=torch.int64)
@@ -1239,7 +1239,7 @@ def test_esm2_full_partial_mask_dkl_loss():
                                       mini_batch_size=50,
                                       cache=True,
                                       model_name="esm2",
-                                      activity_column_name='is_unsorted',
+                                      label_column_name='is_unsorted',
                                       sequence_column_name="FullSeq",
                                       ref_seq=jonathans_reference_sequence,
                                       labels_dtype=torch.int64)
@@ -1424,7 +1424,7 @@ def evaluate():
                                       use_full_mask_only=False,
                                       cache=True,
                                       model_name="esm2",
-                                      activity_column_name='is_unsorted',
+                                      label_column_name='is_unsorted',
                                       sequence_column_name="FullSeq",
                                       ref_seq=jonathans_reference_sequence,
                                       labels_dtype=torch.int64)

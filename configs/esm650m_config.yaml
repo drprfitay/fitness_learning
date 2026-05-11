@@ -10,7 +10,7 @@ train_type: "triplet"
 # Strings
 nmuts_column: "num_muts"
 sequence_column_name: "full_seq"
-activity_column_name: "inactive"
+label_column_name: "inactive"
 first_column_name: "L42"
 last_column_name: "V224"
 plm_name: "esm2_t33_650M_UR50D"

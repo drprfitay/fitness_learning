@@ -3,6 +3,7 @@ library(pheatmap)
 library(RColorBrewer)
 library(cowplot)
 library(ggplot2)
+library(reshape2)
 
 len <- length
 printf <- function(...) {print(sprintf(...))}
@@ -12,22 +13,52 @@ rdylbu_cg <- colorRampPalette(rev(brewer.pal(n = 11,  name = "RdYlBu")))
 
 base_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/results/gfp_dataset/llm_epinnet_comparisions/"
 
-figure_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/figures/esm_lr_epinnet/"
+base_figure_path = "/Users/itayta/Desktop/prot_stuff/fitness_lndscp/fitness_learning/figures/esm_lr_epinnet/"
+
+
 dir.create(figure_path)
-datasets = list("train_1.csv", "train_2.csv", "train_3.csv", "train_4.csv", "train_5.csv")
+datasets = list("f_train_1.csv", "f_train_2.csv", "f_train_3.csv", "f_train_4.csv", "f_train_5.csv", "f_train_6.csv")
 
 
+train_nmuts = 1:6
+max_test_nmuts <- 11
 
 
-plot_boxplots <- function(df, metric)  {
-  melted_df <- melt(df)
-  colnames(melted_df) <- c("nmuts", "model_name", "vals")
-  melted_df <- melted_df[!is.na(melted_df$vals),]
-  
-  ggplot(melted_df, aes(x=model_name, y=vals)) +
-    geom_boxplot() +
-    geom_dotplot(binaxis = "y", stackdir = "center", position = "dodge")
-}
+model_cols = list("esm8m"=list("gt"="y_true_llm_esm2_8m", 
+                               "pred"="y_pred_llm_esm2_8m_mlp_label",
+                               "pred_score"="y_pred_llm_esm2_8m_mlp_score",
+                               "nmuts"="nmuts_llm_esm2_8m"),
+                  "esm35m"=list("gt"="y_true_llm_esm2_35m", 
+                                "pred"="y_pred_llm_esm2_35m_mlp_label",
+                                "pred_score"="y_pred_llm_esm2_35m_mlp_score",
+                                "nmuts"="nmuts_llm_esm2_35m"),
+                  "esm35m_msa_backbone"=list("gt"="y_true_llm_esm2_35m_msa_backbone", 
+                                             "pred"="y_pred_llm_esm2_35m_msa_backbone_mlp_label",
+                                             "pred_score"="y_pred_llm_esm2_35m_msa_backbone_mlp_score",
+                                             "nmuts"="nmuts_llm_esm2_35m_msa_backbone"),
+                  "esm35m_msa_backbone_no_norm"=list("gt"="y_true_llm_esm2_35m_msa_backbone_no_norm", 
+                                             "pred"="y_pred_llm_esm2_35m_msa_backbone_no_norm_mlp_label",
+                                             "pred_score"="y_pred_llm_esm2_35m_msa_backbone_no_norm_mlp_score",
+                                             "nmuts"="nmuts_llm_esm2_35m_msa_backbone_no_norm"),                  
+                  "esm650m"=list("gt"="y_true_llm_esm2_650m", 
+                                 "pred"="y_pred_llm_esm2_650m_mlp_label",
+                                 "pred_score"="y_pred_llm_esm2_650m_mlp_score",
+                                 "nmuts"="nmuts_llm_esm2_650m"),              
+                  
+                  "lr"=list("gt"="y_true_seq", 
+                            "pred"="y_pred_ohe_linreg_label",
+                            "pred_score"="y_pred_ohe_linreg",
+                            "nmuts"="nmuts_seq"),
+                  
+                  "epinnet"=list("gt"="y_true_seq", 
+                                 "pred"="y_pred_ohe_mlp_label",
+                                 "pred_score"="y_pred_ohe_mlp_score",
+                                 "nmuts"="nmuts_seq"))
+
+all_models = c("esm8m", "esm35m", "esm35m_msa_backbone", "esm35m_msa_backbone_no_norm", "esm650m", 'lr', 'epinnet')
+metrics <- c("accuracy", "precision", "recall", "f1", "ROC", "top_100")
+
+
 
 evaluate_classifier <- function(gt, pred, pred_prob) {
   
@@ -86,36 +117,25 @@ evaluate_classifier <- function(gt, pred, pred_prob) {
 
 
 
-train_nmuts = 1:5
-max_test_nmuts <- 11
+
+all_masks <- list("scale_comp"=c(T, T, F, F, T , F, F),
+                  "pretraining"=c(F, T, T, T, F , F, F),
+                  "classic_comp"=c(F, T, F, F, F , T, T),
+                  "lr_650m"=c(F, F, F, F, T, T ,F))
 
 
-model_cols = list("esm8m"=list("gt"="y_true_llm_esm2_8m", 
-                               "pred"="y_pred_llm_esm2_8m_mlp_label",
-                               "pred_score"="y_pred_llm_esm2_8m_mlp_score",
-                               "nmuts"="nmuts_llm_esm2_8m"),
-                  "esm35m"=list("gt"="y_true_llm_esm2_35m", 
-                                "pred"="y_pred_llm_esm2_35m_mlp_label",
-                                "pred_score"="y_pred_llm_esm2_35m_mlp_score",
-                                "nmuts"="nmuts_llm_esm2_35m"),
-                  
-                  "esm650m"=list("gt"="y_true_llm_esm2_650m", 
-                                 "pred"="y_pred_llm_esm2_650m_mlp_label",
-                                 "pred_score"="y_pred_llm_esm2_650m_mlp_score",
-                                 "nmuts"="nmuts_llm_esm2_650m"),              
-                  
-                  "lr"=list("gt"="y_true_seq", 
-                            "pred"="y_pred_ohe_linreg_label",
-                            "pred_score"="y_pred_ohe_linreg",
-                            "nmuts"="nmuts_seq"),
-                  
-                  "epinnet"=list("gt"="y_true_seq", 
-                                 "pred"="y_pred_ohe_mlp_label",
-                                 "pred_score"="y_pred_ohe_mlp_score",
-                                 "nmuts"="nmuts_seq"))
 
-models = c("esm8m", "esm35m", "esm650m", 'lr', 'epinnet')
-metrics <- c("accuracy", "precision", "recall", "f1", "ROC", "top_100")
+#mask = c(T, T, F, F, T , F, F)
+
+for (comp_name in names(all_masks)) { 
+
+model_mask = all_masks[[comp_name]]
+  
+models = all_models[model_mask]
+
+figure_path = sprintf("%s/%s", base_figure_path, comp_name)
+dir.create(figure_path)
+
 evaluation_across_all <- list()
 specific_evaluations <- list()
 
@@ -134,6 +154,7 @@ for (model in models) {
     specific_evaluations[[model]][[metric]] <- matrix(NaN, nrow=len(train_nmuts), ncol=max_test_nmuts)
   }
 }
+
 
 for (train_nmut in train_nmuts) {
   df = read.csv(sprintf("%s/train_%d.csv", base_path, train_nmut))
@@ -192,7 +213,7 @@ for (model_name in models) {
     
     mt <- specific_evaluations[[model_name]][[metric]]
     colnames(mt) <- c(1:11)
-    rownames(mt) <- c(1:5)
+    rownames(mt) <- c(train_nmuts)
     
     
     text_mat = matrix("", nrow=nrow(mt),
@@ -220,16 +241,23 @@ for (model_name in models) {
     plt <- ph(mt, 
               #display_numbers=text_mat,
               main=sprintf("%s - %s", model_name, metric),
-              #breaks=seq(0,1,length=500),
-              #col=spec_cg(500),
+              breaks=seq(0,1,length=500),
+              col=rdylbu_cg(500),
               legend=T,
+              na_col="white",
+              border_color=NA,
               number_color="black")[[4]]
-    
+      
     
     plot_list <- append(plot_list, list(plt))
     
   }
 }
+
+
+
+
+
 
 
 plot_list$nrow <- len(models)
@@ -240,6 +268,64 @@ plot(final_plot)
 dev.off()
 
 
+plot_boxplots <- function(df, metric, title)  {
+  melted_df <- melt(df)
+  colnames(melted_df) <- c("nmuts", "model_name", "vals")
+  melted_df <- melted_df[!is.na(melted_df$vals),]
+  
+  
+  g <- 
+  ggplot(melted_df, aes(x=factor(model_name), y=vals)) +
+    geom_boxplot() +
+    #geom(binaxis = "y", stackdir = "center", position = "dodge") +
+    #geom_point() +
+    ggtitle(title) + 
+    ylab(metric) + 
+    xlab("Model name") +
+    theme_cowplot()
+  
+  for(unique_nmut in unique(melted_df$nmuts)) {
+    tmp_df = melted_df[melted_df$nmuts == unique_nmut,] 
+    g <- g + geom_line(data=tmp_df, 
+                       aes(x=factor(model_name), y=vals, group=1), col="gray60", alpha=.5, linewidth=1)
+  }
+  
+  g <- g + geom_point()
+  
+  plot(g)
+}
+
+for (metric in metrics) { 
+
+ncols = max_test_nmuts
+nrows = max(train_nmuts) 
+
+
+for (i in 1:ncols) { 
+  df <- do.call(cbind, lapply(models, function(mn) {specific_evaluations[[mn]][[metric]][,i]}))
+  colnames(df) <- models
+  g <- plot(plot_boxplots(df, metric, sprintf("Test on %d", i)))
+  
+  pdf(sprintf("%s/comp_%s_test_on_%d.pdf", figure_path, metric, i), width=4, height=4)
+  plot(g)
+  dev.off()
+  
+}
+
+for (i in 1:nrows) { 
+  df <- do.call(cbind, lapply(models, function(mn) {specific_evaluations[[mn]][[metric]][i,]}))
+  colnames(df) <- models
+  g <- plot_boxplots(df, metric, sprintf("Train on %d", i))
+  
+  pdf(sprintf("%s/comp_%s_train_on_%d.pdf", figure_path, metric, i), width=4, height=4)
+  plot(g)
+  dev.off()
+}
+
+
+}
+
+}
 
 
 

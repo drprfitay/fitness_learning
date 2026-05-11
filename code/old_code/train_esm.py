@@ -677,7 +677,7 @@ def get_esm3_baselines(use_structure=True,
                                              frozen_esm_structure_decoder=structure_decoder,
                                              get_mutated_position_function=get_mutated_position_function_dms,
                                              pdb_class=ProteinChain,
-                                             activity_column_name="log_fitness")
+                                             label_column_name="log_fitness")
     
         pdb=None
         
@@ -794,7 +794,7 @@ def get_esm2_baseline(model_name,
         dataset = Esm2SequenceActivityDataset(example_dataset_path,
                                               esm_alphabet=esm2_alphabet,
                                               get_mutated_position_function=get_mutated_position_function_dms,
-                                              activity_column_name='log_fitness')
+                                              label_column_name='log_fitness')
         
         
         wt_sequence = get_wt_sequence(dataset.sequence_dataframe)
@@ -857,7 +857,7 @@ def get_esm3_gfp_baseline():
                                          frozen_esm_tokenizer=tokenizers,
                                          frozen_esm_structure_decoder=structure_decoder,
                                          get_mutated_position_function=get_mutated_position_function_gfp,
-                                         activity_column_name='is_unsorted',
+                                         label_column_name='is_unsorted',
                                          sequence_column_name="FullSeq",
                                          ref_seq=jonathans_reference_sequence,
                                          labels_dtype=torch.int64)
@@ -1023,7 +1023,7 @@ def get_esm2_gfp_baseline(model_name):
     dataset = Esm2SequenceActivityDataset(dataset_path,
                                           esm2_alphabet,
                                           get_mutated_position_function=get_mutated_position_function_gfp,
-                                          activity_column_name='is_unsorted',
+                                          label_column_name='is_unsorted',
                                           sequence_column_name="FullSeq",
                                           ref_seq=jonathans_reference_sequence,
                                           labels_dtype=torch.int64)

@@ -9,7 +9,7 @@ train_type: "msa_backbone"
 # Strings
 
 sequence_column_name: "sequence"
-activity_column_name: "index"
+label_column_name: "index"
 first_column_name: "L42"
 last_column_name: "V224"
 plm_name: "esm2_t12_35M_UR50D"
