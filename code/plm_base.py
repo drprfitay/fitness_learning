@@ -236,9 +236,14 @@ def plm_init(PLM_BASE_PATH):
             seq = "<cls>" + seq + "<eos>"
             return tokenizer.encode(seq)
         
-        def forward_func(x):
-            forward = model.forward(x, repr_layers=[model.num_layers])
-            hh = forward["representations"][model.num_layers]
+        def forward_func(x, specific_layer=None):
+            forward = model.forward(x, repr_layers=list(range(0,model.num_layers+1)))
+            if specific_layer == "all":
+                hh = forward["representations"]
+            elif specific_layer is not None and isinstance(specific_layer, int):
+                hh = forward["representations"][specific_layer]
+            else:
+                hh = forward["representations"][model.num_layers]
             logits = forward["logits"]
             return(logits, hh)                                
                     
@@ -575,9 +580,17 @@ class plmEmbeddingModel(torch.nn.Module):
     def _emb_only_forward(self, x, **kwargs):
         if "attention_mask" in kwargs:
             attention_mask = kwargs["attention_mask"]
-            return self.forward_func(x, attention_mask=attention_mask)[1]
+            if "specific_layer" in kwargs:
+                specific_layer = kwargs["specific_layer"]
+                return self.forward_func(x, attention_mask=attention_mask, specific_layer=specific_layer)[1]
+            else:
+                return self.forward_func(x, attention_mask=attention_mask)[1]
         else:
-            return self.forward_func(x)[1]
+            if "specific_layer" in kwargs:
+                specific_layer = kwargs["specific_layer"]
+                return self.forward_func(x, specific_layer=specific_layer)[1]
+            else:
+                return self.forward_func(x)[1]
     
     def forward(self, x, **kwargs):
         return self.final_forward(x, **kwargs)
@@ -727,4 +740,6 @@ class seqMLP(torch.nn.Module):
 
     def encode(self, *args):
         return self.encode_int(*args)
-        
+    
+
+   
