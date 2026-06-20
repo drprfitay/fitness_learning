@@ -53,7 +53,9 @@ datasets = {
     #"nmt": "./data/nmt/nmt_full_seq.csv",
     #"gfp" : "./data/gfp/gfp_dataset_10mut.csv",
     #"pte": "./data/pte/pte.csv" 
-    "aamyl": "./data/aamyl/aamyl.csv"
+    #"aamyl": "./data/aamyl/aamyl.csv",
+    #"his": "./data/his/his.csv",
+    "casp": "./data/casp/casp.csv"
 }
 
 
@@ -116,7 +118,7 @@ for dataset_to_use in datasets.keys():
                 decoded_from_tokens = esmdecode(seq_tokens, model.tokenizer.to_dict())
             else:
                 decoded_from_tokens = model.tokenizer.decode(seq_tokens)
-            columns = get_relevant_columns[dataset_to_use]()
+            columns = get_relevant_columns[dataset_to_use](df)
             seq_from_df = "".join(df.iloc[idx][columns].tolist())       
 
             assert  decoded_from_tokens == seq_from_df       

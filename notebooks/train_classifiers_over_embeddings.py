@@ -53,6 +53,7 @@ def main():
     parser.add_argument('--n_end', type=int, default=3,
                         help='End value for the number of training mutations (inclusive)')
     parser.add_argument("--pca", type=int, default=None, help="Number of PCA components to use")
+    parser.add_argument("--min_n", type=int, default=1, help="Minimum number of training mutations")
     parser.add_argument(
         '--classifier_model', 
         type=str, 
@@ -108,13 +109,13 @@ def main():
             n_train_data = n_train
             n_test_data = list(range(n_train + 1, 11))
 
-            for i in range(1, n_train_data + 1):
+            for i in range(args.min_n, n_train_data + 1):
                 labels = torch.load(os.path.join(classifier_embeddings_path, "y_values_of_nmut_%d.pt" % i))
-                indices = torch.load(os.path.join(classifier_embeddings_path, "indices_of_nmut_%d.pt" % i))
+                indices = torch.load(os.path.join(classifier_embeddings_path, "indices_of_nmut_%d.pt" % i)).to(torch.int64)
                 embeddings = torch.load(os.path.join(classifier_embeddings_path, "embeddings_of_nmut_%d.pt" % i))
 
                 if external_labels is not None:
-                    labels = torch.from_numpy(external_labels[indices])
+                    labels = torch.from_numpy(external_labels[indices].reshape(-1))
                 
                 if args.delta_embeddings:
                     print(f"Subtracting WT embedding from {model_name} embeddings")
@@ -142,9 +143,9 @@ def main():
             mlp_base_parameters = {
                 "activation" : 'relu',           
                 "solver" : args.op, 
-                "batch_size": 128,   
+                "batch_size": 64,   
                 "alpha" : 1,                
-                "learning_rate_init" : 1e-3,    
+                "learning_rate_init" : 1e-4,    
                 "max_iter" :args.niters,
                 "random_state" : 4321,                
                 "n_iter_no_change" : 10,         
@@ -228,9 +229,14 @@ def main():
 
             test_data = []
             for i in n_test_data:
+
                 labels = torch.load(os.path.join(classifier_embeddings_path, "y_values_of_nmut_%d.pt" % i))
                 indices = torch.load(os.path.join(classifier_embeddings_path, "indices_of_nmut_%d.pt" % i))
                 embeddings = torch.load(os.path.join(classifier_embeddings_path, "embeddings_of_nmut_%d.pt" % i))
+                
+                if len(labels) == 0:
+                    print(f"Skipping test n_muts={i}, no samples.")
+                    continue
 
                 if args.mean_embeddings:
                     flat_embeddings = embeddings.mean(axis=1)

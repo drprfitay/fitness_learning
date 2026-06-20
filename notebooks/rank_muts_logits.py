@@ -63,7 +63,8 @@ def get_num_muts_column_name(dataset):
         "pte": "num_muts",
         "gcn4": "num_muts",
         "nmt": "num_muts",
-        "aamyl": "num_muts"
+        "aamyl": "num_muts",
+        "trpb": "num_muts"
     }[dataset]
 
 # --- OHE Feature Creation ---
@@ -78,7 +79,9 @@ datasets_and_activity = {
     "nmt": {"path": "./data/nmt/nmt_full_seq.csv", "activity_col": "activity"},
     "lov": {"path": "./data/lov/lov.csv", "activity_col": "activity"},
     "gfp": {"path": "./data/gfp/gfp_dataset_10mut.csv", "activity_col": "inactive"},
-    "aamyl": {"path": "./data/aamyl/aamyl.csv", "activity_col": "activity"}
+    "aamyl": {"path": "./data/aamyl/aamyl.csv", "activity_col": "activity"},
+    "trpb": {"path": "./data/trpb/trpb.csv", "activity_col": "activity"}
+
 }
 
 import sys
@@ -91,7 +94,7 @@ plm_init(os.path.join(os.getcwd(), "../"))
 
 os.chdir(os.path.join(os.getcwd(), "../notebooks"))
 
-model_to_use = "esm2_t33_650M_UR50D"
+model_to_use = "esm2_t6_8M_UR50D"
 model = plmEmbeddingModel(plm_name="%s" % model_to_use, logits_only=True, emb_only=False).eval()
 
 def get_one_hot_encoding(sdf, relevant_columns):

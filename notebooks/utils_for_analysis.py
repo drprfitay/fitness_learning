@@ -20,7 +20,10 @@ DATASET_PATHS = {
     "gcn4": "data/gcn4/gcn4.csv",
     "pte": "data/pte/pte.csv",
     "nmt": "data/nmt/nmt.csv",
-    "aamyl": "data/aamyl/aamyl.csv"
+    "aamyl": "data/aamyl/aamyl.csv",
+    "trpb": "data/trpb/trpb.csv",
+    "his": "data/his/his.csv",
+    "casp": "data/casp/casp.csv"
 }
 
 positions = {
@@ -30,7 +33,10 @@ positions = {
     "pard3": ["L48","R82"],
     "gcn4": ["S101","S144"],
     "pte": ["I72", "M283"],
-    "aamyl": ["P4", "D425"]
+    "aamyl": ["P4", "D425"],
+    "trpb": ["A104", "Y301"],
+    "his": ["L7", "D211"],
+    "casp": ["D561", "R588"]
 }
 
 xlabel_dict = {
@@ -45,8 +51,8 @@ ylabel_dict = {
     "accuracy": "Accuracy",
     "recall": "Recall",
     "top_100_pct": "Precision@100",
-    "correlation": "Spearman's rho",
-    "cor_llm": "Spearman's rho"
+    "correlation": "Spearman's ρ",
+    "cor_llm": "Spearman's ρ"
 }
 
 color_map = {
@@ -75,7 +81,10 @@ full_seq_column_name = {
     "gfp": "full_seq",
     "pte": "full_seq",   
     "aamyl": "full_seq",
-    "nmt": "seq"
+    "nmt": "seq",
+    "trpb": "full_seq",
+    "his": "full_seq",
+    "casp": "full_seq"
 }
 
 num_muts_column_name = {
@@ -85,7 +94,10 @@ num_muts_column_name = {
     "pte": "num_muts",   
     "gcn4": "num_muts",
     "nmt": "num_muts",
-    "aamyl": "num_muts"
+    "aamyl": "num_muts",
+    "trpb": "num_muts",
+    "his": "num_muts",
+    "casp": "num_muts"
 }
 
 
@@ -273,13 +285,13 @@ def get_relevant_columns_gfp_protgym(df, first_col, last_col):
 def gcn4_positions(df):
     return get_positions_gfp_protgym(df, positions["gcn4"][0], positions["gcn4"][1])
 
-def gcn4_relevant_columns():
+def gcn4_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["gcn4"][0], positions["gcn4"][1])    
 
 def pard3_positions(df):
     return get_positions_gfp_protgym(df, positions["pard3"][0], positions["pard3"][1])
 
-def pard3_relevant_columns():
+def pard3_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["pard3"][0], positions["pard3"][1])    
 
 def lov_positions(df):
@@ -303,8 +315,20 @@ def pte_relevant_columns():
 def aamyl_positions(df):
     return get_positions_gfp_protgym(df, positions["aamyl"][0], positions["aamyl"][1])
 
-def aamyl_relevant_columns():
+def aamyl_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["aamyl"][0], positions["aamyl"][1])
+
+def his_positions(df):
+    return get_positions_gfp_protgym(df, positions["his"][0], positions["his"][1])
+
+def his_relevant_columns(df):
+    return get_relevant_columns_gfp_protgym(df, positions["his"][0], positions["his"][1])
+
+def casp_positions(df):
+    return get_positions_gfp_protgym(df, positions["casp"][0], positions["casp"][1])
+
+def casp_relevant_columns(df):
+    return get_relevant_columns_gfp_protgym(df, positions["casp"][0], positions["casp"][1])
 
 def nmt_positions(df):
     si = np.where(df.columns == "1")[0][0]
@@ -325,7 +349,9 @@ get_positions = {
     "gfp": gfp_positions,
     "pte": pte_positions,   
     "nmt": nmt_positions,
-    "aamyl": aamyl_positions
+    "aamyl": aamyl_positions,
+    "his": his_positions,
+    "casp": casp_positions
 }
 
 get_relevant_columns = {
@@ -335,7 +361,9 @@ get_relevant_columns = {
     "gfp": gfp_relevant_columns,
     "pte": pte_relevant_columns,   # 
     "nmt": nmt_relevant_columns,
-    "aamyl": aamyl_relevant_columns
+    "aamyl": aamyl_relevant_columns,
+    "his": his_relevant_columns,
+    "casp": casp_relevant_columns
 }
 
 
