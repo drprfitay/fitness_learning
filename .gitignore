@@ -12,6 +12,7 @@ notebooks/tmp_files/
 notebooks/results/
 notebooks/refined_figures/
 
+*.pkl
 *.svg
 *.pth
 *.pt
