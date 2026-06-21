@@ -14,7 +14,7 @@ cd fitness_learning
 Create and switch to the submission branch:
 
 ```bash
-git checkout -b Submission_V1
+git checkout Submission_V1
 ```
 
 Then run the environment installer:
