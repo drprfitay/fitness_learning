@@ -2,6 +2,44 @@
 
 This repository contains the notebooks and scripts used to benchmark protein language models (pLMs), simple baselines, and controlled extrapolation settings in mutation-dense protein design tasks.
 
+## Installation and data download
+
+To reproduce the analyses, first clone the repository:
+
+```bash
+git clone https://github.com/drprfitay/fitness_learning.git
+cd fitness_learning
+```
+
+Create and switch to the submission branch:
+
+```bash
+git checkout -b Submission_V1
+```
+
+Then run the environment installer:
+
+```bash
+chmod +x installer.sh
+./installer.sh
+```
+
+After installation, activate the conda environment if it is not already active:
+
+```bash
+conda activate esm_env
+```
+
+Then download and extract the required data files:
+
+```bash
+chmod +x downloader.sh
+./downloader.sh
+```
+
+After these steps, the notebooks and analysis scripts can be run from the repository.
+
+
 ## Main analysis notebooks
 
 ### `plm_zero_shot.ipynb`
