@@ -8,21 +8,13 @@ from sklearn.neural_network import MLPRegressor
 from scipy.stats import spearmanr
 
 DATASET_PATHS = {
-    "gfp" : "data/gfp/gfp_dataset_10mut_nmut_1.csv",
-    "lov": "data/lov/lov.csv",
     "pard3": "data/pard3/pard3.csv",
     "gcn4": "data/gcn4/gcn4.csv",
-    "pte": "data/pte/pte.csv",
-    "nmt": "data/nmt/nmt_full_seq.csv",
 }
 
 positions = {
-    "gfp": ["L42", "V224"],
-    "lov": ["G2", "T112"],
     "pard3": ["L48","R82"],
     "gcn4": ["S101","S144"],
-    "pte": ["I72", "M283"],
-    "nmt": ["1", "272"]
 }
 
 def get_relevant_columns_gfp_protgym(df, first_col, last_col):
@@ -67,35 +59,13 @@ def get_one_hot_encoding(sdf, relevant_columns):
 
 def get_embedding_paths(dataset, base_path):
     # Ensure all datasets support progen2-small embedding
-    if dataset == "nmt":
-        return {
-            "progen2-small": f"{base_path}/data/nmt/embeddings/progen2-small",
-            "esm_8m": f"{base_path}/data/nmt/embeddings/esm_8m"
-        }
-    elif dataset == "gfp":
-        return {
-            "esm_8m": f"{base_path}/data/gfp/embeddings/esm_8m",
-            "progen2-small": f"{base_path}/data/gfp/embeddings/progen2-small"
-        }
-    elif dataset == "pard3":
+    if dataset == "pard3":
         return {
             "esm_8m": f"{base_path}/data/pard3/embeddings/esm_8m",
-            "progen2-small": f"{base_path}/data/pard3/embeddings/progen2-small"
-        }
-    elif dataset == "lov":
-        return {
-            "esm_8m": f"{base_path}/data/lov/embeddings/esm_8m",
-            "progen2-small": f"{base_path}/data/lov/embeddings/progen2-small"
-        }
-    elif dataset == "pte":
-        return {
-            "esm_8m": f"{base_path}/data/pte/embeddings/esm_8m",
-            "progen2-small": f"{base_path}/data/pte/embeddings/progen2-small"
         }
     elif dataset == "gcn4":
         return {
             "esm_8m": f"{base_path}/data/gcn4/embeddings/esm_8m",
-            "progen2-small": f"{base_path}/data/gcn4/embeddings/progen2-small"
         }
     else:
         raise ValueError(f"Unknown dataset: {dataset}")

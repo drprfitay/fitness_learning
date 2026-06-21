@@ -24,8 +24,8 @@ full_model_names = {
     "esm_150m": "esm2_t30_150M_UR50D",
     "esm_650m": "esm2_t33_650M_UR50D",
     "esm_3b": "esm2_t36_3B_UR50D",
-    "progen2-medium": "progen2-medium",
-    "progen2-small": "progen2-small"
+    #"progen2-medium": "progen2-medium",
+    #"progen2-small": "progen2-small"
     #"prot_bert": "prot_bert" # bert has no decoder
 }
 
@@ -47,15 +47,8 @@ def esmdecode(seq, tokenizer_dict):
     return "".join([reverse_dict[x] for x in seq])
 
 datasets = {
-    #"lov": "./data/lov/lov.csv",
-    #"pard3": "./data/pard3/pard3.csv",
-    #"gcn4": "./data/gcn4/gcn4.csv",
-    #"nmt": "./data/nmt/nmt_full_seq.csv",
-    #"gfp" : "./data/gfp/gfp_dataset_10mut.csv",
-    #"pte": "./data/pte/pte.csv" 
-    #"aamyl": "./data/aamyl/aamyl.csv",
-    #"his": "./data/his/his.csv",
-    "casp": "./data/casp/casp.csv"
+    "pard3": "./data/pard3/pard3.csv",
+    "gcn4": "./data/gcn4/gcn4.csv",
 }
 
 
