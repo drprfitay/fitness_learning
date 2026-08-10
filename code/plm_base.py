@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Wed Jul 16 17:22:42 2025
@@ -25,7 +24,7 @@ from random import sample
 from math import ceil
 from collections import OrderedDict
 from transformers import BertModel, BertTokenizer
-from transformers import AutoTokenizer, AutoModel, T5Tokenizer
+from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM, T5Tokenizer
 from tokenizers import Tokenizer
 
 global is_init
@@ -124,7 +123,14 @@ def plm_init(PLM_BASE_PATH):
                              "esm2_t12_35M_UR50D", "esm2_t30_150M_UR50D", "esm2_t33_650M_UR50D",
                              "esm2_t36_3B_UR50D", "esm2_t48_15B_UR50D"]
     supported_progen_models = ["progen2-small", "progen2-medium"]
-    supported_transformers_pretrained_models = ["prot_bert", "ankh3-large"]          
+    supported_transformers_pretrained_models = ["prot_bert", "ankh3-large"]
+    supported_saprot_models = [
+        "saprot",
+        "saprot_35m_af2",
+        "saprot_650m_af2",
+        "saprot_650m_pdb",
+        "saprot_1.3b_afdb_omg_ncbi",
+    ]
 
     def load_ablang_model_and_alphabet(model_name):
         if model_name not in supported_ablang_models:
@@ -236,14 +242,9 @@ def plm_init(PLM_BASE_PATH):
             seq = "<cls>" + seq + "<eos>"
             return tokenizer.encode(seq)
         
-        def forward_func(x, specific_layer=None):
-            forward = model.forward(x, repr_layers=list(range(0,model.num_layers+1)))
-            if specific_layer == "all":
-                hh = forward["representations"]
-            elif specific_layer is not None and isinstance(specific_layer, int):
-                hh = forward["representations"][specific_layer]
-            else:
-                hh = forward["representations"][model.num_layers]
+        def forward_func(x):
+            forward = model.forward(x, repr_layers=[model.num_layers])
+            hh = forward["representations"][model.num_layers]
             logits = forward["logits"]
             return(logits, hh)                                
                     
@@ -306,6 +307,63 @@ def plm_init(PLM_BASE_PATH):
                           encode_func,
                           forward_func)
     
+    def load_saprot_model_and_alphabet(model_name):
+        if model_name not in supported_saprot_models:
+            raise BaseException("Unsupported model %s, model must be in: %s" %\
+                                (model_name, ", ".join(supported_saprot_models)))
+
+        full_name_dict = {
+            "saprot": "westlake-repl/SaProt_650M_AF2",
+            "saprot_35m_af2": "westlake-repl/SaProt_35M_AF2",
+            "saprot_650m_af2": "westlake-repl/SaProt_650M_AF2",
+            "saprot_650m_pdb": "westlake-repl/SaProt_650M_PDB",
+            "saprot_1.3b_afdb_omg_ncbi": "westlake-repl/SaProt_1.3B_AFDB_OMG_NCBI",
+        }
+
+        model_path = full_name_dict[model_name]
+        tokenizer = AutoTokenizer.from_pretrained(model_path, token=False)
+        model = AutoModelForMaskedLM.from_pretrained(model_path, token=False)
+
+        def get_saprot_model():
+            return model
+
+        def get_saprot_tokenizer():
+            return tokenizer
+
+        def get_embeddings():
+            return model.get_input_embeddings()
+
+        def get_n_layers():
+            return model.config.num_hidden_layers
+
+        def get_token_vocab_dim():
+            return tokenizer.get_vocab(), model.config.hidden_size
+
+        def encode_func(seq):
+            return tokenizer(seq)["input_ids"]
+
+        def forward_func(x, attention_mask=None):
+            if x.dim() == 1:
+                x = x.unsqueeze(0)
+
+            if attention_mask is None:
+                attention_mask = torch.ones_like(x)
+
+            forward = model(
+                input_ids=x,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            return forward.logits, forward.hidden_states[-1]
+
+        return PlmWrapper(get_saprot_model,
+                          get_saprot_tokenizer,
+                          get_embeddings,
+                          get_n_layers,
+                          get_token_vocab_dim,
+                          encode_func,
+                          forward_func)
+
     # TODO: merge with ablang
     def load_transformers_pretrained_model_and_alphabet(model_name):
 
@@ -389,6 +447,9 @@ def plm_init(PLM_BASE_PATH):
 
         if model_name in supported_transformers_pretrained_models:
             return load_transformers_pretrained_model_and_alphabet(model_name)
+
+        if model_name in supported_saprot_models:
+            return load_saprot_model_and_alphabet(model_name)
         
     internal_wrapper["load_model"] = load_model_internal
         
@@ -580,20 +641,129 @@ class plmEmbeddingModel(torch.nn.Module):
     def _emb_only_forward(self, x, **kwargs):
         if "attention_mask" in kwargs:
             attention_mask = kwargs["attention_mask"]
-            if "specific_layer" in kwargs:
-                specific_layer = kwargs["specific_layer"]
-                return self.forward_func(x, attention_mask=attention_mask, specific_layer=specific_layer)[1]
-            else:
-                return self.forward_func(x, attention_mask=attention_mask)[1]
+            return self.forward_func(x, attention_mask=attention_mask)[1]
         else:
-            if "specific_layer" in kwargs:
-                specific_layer = kwargs["specific_layer"]
-                return self.forward_func(x, specific_layer=specific_layer)[1]
-            else:
-                return self.forward_func(x)[1]
+            return self.forward_func(x)[1]
     
     def forward(self, x, **kwargs):
         return self.final_forward(x, **kwargs)
+
+class StructurePlmEmbedding(plmEmbeddingModel):
+    """PLM wrapper using structure tokens supplied in PDB-sequence coordinates."""
+
+    def __init__(self,
+                 plm_name,
+                 wt_sequence,
+                 pdb_sequence,
+                 foldseek_tokens,
+                 **kwargs):
+        super().__init__(plm_name, **kwargs)
+
+        self.wt_sequence = wt_sequence.upper()
+        self.pdb_sequence = pdb_sequence.upper()
+        self.foldseek_tokens = foldseek_tokens.lower()
+
+        if len(self.pdb_sequence) != len(self.foldseek_tokens):
+            raise ValueError(
+                "PDB sequence and PDB token lengths differ: %d != %d" %
+                (len(self.pdb_sequence), len(self.foldseek_tokens))
+            )
+
+        self.structure_sequence, self.structure_mapping = self._align_structure_to_wt()
+
+        mapped = [i for i in self.structure_mapping if i is not None]
+        self.structure_coverage = len(mapped) / len(self.wt_sequence) if self.wt_sequence else 0.0
+        self.alignment_identity = (
+            sum(self.wt_sequence[wt_i] == self.pdb_sequence[pdb_i]
+                for wt_i, pdb_i in enumerate(self.structure_mapping)
+                if pdb_i is not None) / len(mapped)
+            if mapped else 0.0
+        )
+
+    def _align_structure_to_wt(self):
+        """Semi-global alignment covering every WT position.
+
+        Extra PDB residues at either terminus are free and ignored. Internal PDB
+        insertions are skipped; WT residues absent from the PDB receive '#'.
+        """
+        wt = self.wt_sequence
+        pdb = self.pdb_sequence
+        n, m = len(wt), len(pdb)
+
+        match_score = 2
+        mismatch_score = -1
+        gap_score = -2
+
+        dp = [[0] * (m + 1) for _ in range(n + 1)]
+        trace = [[None] * (m + 1) for _ in range(n + 1)]
+
+        # PDB prefix is free; every WT position still has to be represented.
+        for j in range(1, m + 1):
+            trace[0][j] = "pdb"
+        for i in range(1, n + 1):
+            dp[i][0] = dp[i - 1][0] + gap_score
+            trace[i][0] = "wt"
+
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                diagonal = dp[i - 1][j - 1] + (
+                    match_score if wt[i - 1] == pdb[j - 1] else mismatch_score
+                )
+                wt_gap = dp[i - 1][j] + gap_score       # WT residue missing in PDB
+                pdb_gap = dp[i][j - 1] + gap_score      # extra PDB residue
+
+                # Prefer a residue-residue alignment on ties.
+                best = max(diagonal, wt_gap, pdb_gap)
+                dp[i][j] = best
+                if diagonal == best:
+                    trace[i][j] = "diag"
+                elif wt_gap == best:
+                    trace[i][j] = "wt"
+                else:
+                    trace[i][j] = "pdb"
+
+        # PDB suffix is free.
+        j = max(range(m + 1), key=lambda x: dp[n][x])
+        i = n
+        mapping = [None] * n
+
+        while i > 0:
+            move = trace[i][j]
+            if move == "diag":
+                mapping[i - 1] = j - 1
+                i -= 1
+                j -= 1
+            elif move == "wt":
+                # WT residue has no structural residue.
+                i -= 1
+            elif move == "pdb":
+                # PDB insertion relative to WT: ignore its structural token.
+                j -= 1
+            else:
+                raise RuntimeError("Failed to trace WT/PDB alignment")
+
+        structure_sequence = "".join(
+            self.foldseek_tokens[pdb_i] if pdb_i is not None else "#"
+            for pdb_i in mapping
+        )
+        return structure_sequence, mapping
+
+    def encode(self, seq=None):
+        if seq is None:
+            seq = self.wt_sequence
+        seq = seq.upper()
+
+        if len(seq) != len(self.wt_sequence):
+            raise ValueError(
+                "Sequence and WT lengths differ: %d != %d" %
+                (len(seq), len(self.wt_sequence))
+            )
+
+        combined_seq = "".join(
+            aa + structure_token
+            for aa, structure_token in zip(seq, self.structure_sequence)
+        )
+        return self.internal_encode(combined_seq)
 
 class abPlmEmbeddingModel(plmEmbeddingModel):
     def esm_encode(self, seq):
@@ -740,6 +910,3 @@ class seqMLP(torch.nn.Module):
 
     def encode(self, *args):
         return self.encode_int(*args)
-    
-
-   

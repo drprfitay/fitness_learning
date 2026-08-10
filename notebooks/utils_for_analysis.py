@@ -23,6 +23,8 @@ DATASET_PATHS = {
     "aamyl": "data/aamyl/aamyl.csv",
     "trpb": "data/trpb/trpb.csv",
     "his": "data/his/his.csv",
+    "his2": "data/his2/his2.csv",
+    "his5": "data/his5/his5.csv",
     "casp": "data/casp/casp.csv"
 }
 
@@ -36,6 +38,8 @@ positions = {
     "aamyl": ["P4", "D425"],
     "trpb": ["A104", "Y301"],
     "his": ["L7", "D211"],
+    "his2": ["N137", "F163"],
+    "his5": ["R181", "D211"],
     "casp": ["D561", "R588"]
 }
 
@@ -84,6 +88,8 @@ full_seq_column_name = {
     "nmt": "seq",
     "trpb": "full_seq",
     "his": "full_seq",
+    "his2": "full_seq",
+    "his5": "full_seq",
     "casp": "full_seq"
 }
 
@@ -97,6 +103,8 @@ num_muts_column_name = {
     "aamyl": "num_muts",
     "trpb": "num_muts",
     "his": "num_muts",
+    "his2": "num_muts",
+    "his5": "num_muts",
     "casp": "num_muts"
 }
 
@@ -297,19 +305,19 @@ def pard3_relevant_columns(df):
 def lov_positions(df):
     return get_positions_gfp_protgym(df, positions["lov"][0], positions["lov"][1])
 
-def lov_relevant_columns():
+def lov_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["lov"][0], positions["lov"][1])    
 
 def gfp_positions(df):
     return get_positions_gfp_protgym(df, positions["gfp"][0], positions["gfp"][1])
 
-def gfp_relevant_columns():
+def gfp_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["gfp"][0], positions["gfp"][1])
 
 def pte_positions(df):
     return get_positions_gfp_protgym(df, positions["pte"][0], positions["pte"][1])
 
-def pte_relevant_columns():
+def pte_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["pte"][0], positions["pte"][1])
 
 def aamyl_positions(df):
@@ -323,6 +331,18 @@ def his_positions(df):
 
 def his_relevant_columns(df):
     return get_relevant_columns_gfp_protgym(df, positions["his"][0], positions["his"][1])
+
+def his2_positions(df):
+    return get_positions_gfp_protgym(df, positions["his2"][0], positions["his2"][1])
+
+def his2_relevant_columns(df):
+    return get_relevant_columns_gfp_protgym(df, positions["his2"][0], positions["his2"][1])
+
+def his5_positions(df):
+    return get_positions_gfp_protgym(df, positions["his5"][0], positions["his5"][1])
+
+def his5_relevant_columns(df):
+    return get_relevant_columns_gfp_protgym(df, positions["his5"][0], positions["his5"][1])
 
 def casp_positions(df):
     return get_positions_gfp_protgym(df, positions["casp"][0], positions["casp"][1])
@@ -351,6 +371,8 @@ get_positions = {
     "nmt": nmt_positions,
     "aamyl": aamyl_positions,
     "his": his_positions,
+    "his2": his2_positions,
+    "his5": his5_positions,
     "casp": casp_positions
 }
 
@@ -363,6 +385,8 @@ get_relevant_columns = {
     "nmt": nmt_relevant_columns,
     "aamyl": aamyl_relevant_columns,
     "his": his_relevant_columns,
+    "his2": his2_relevant_columns,
+    "his5": his5_relevant_columns,
     "casp": casp_relevant_columns
 }
 

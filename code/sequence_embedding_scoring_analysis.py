@@ -2,8 +2,8 @@
 """
 Standalone fitness-learning analysis for one-hot and precomputed PLM embeddings.
 
-This is intentionally a copyable/debuggable script. It mirrors the 20 MLP
-architectures and architecture-resolution behavior used in
+This is intentionally a copyable/debuggable script. It mirrors the MLP
+architecture-resolution behavior used in
 src/experiments/run_scoring_experiment.py, but keeps the split layout explicit
 for mutation-count and random-subset experiments.
 """
@@ -61,6 +61,79 @@ DEFAULT_ARCHITECTURE_GRID = [
     {"name": "mlp_512_1024_256", "hidden_layers": [512, 1024, 256], "lr": 3e-4, "weight_decay": 1e-5, "dropout": 0.2, "batch_size": 64},
 ]
 
+ARCHITECTURE_GRID_NAMES_BY_SIZE = {
+    "tiny": [
+        "mlp_16",
+        "mlp_32",
+        "mlp_64",
+        "mlp_32_16",
+        "mlp_16_16",
+        "mlp_16_32",
+        "mlp_128_16",
+        "mlp_128_32",
+        "mlp_64_64",
+        "mlp_128_64",
+        "mlp_128",
+        "mlp_32_128",
+        "mlp_16_128",
+        "mlp_128_32_16",
+        "mlp_100_100",
+    ],
+    "small": [
+        "mlp_16",
+        "mlp_32",
+        "mlp_64",
+        "mlp_128",
+        "mlp_32_16",
+        "mlp_16_16",
+        "mlp_16_32",
+        "mlp_128_32",
+        "mlp_128_16",
+        "mlp_64_64",
+        "mlp_128_64",
+        "mlp_128_128",
+        "mlp_256",
+        "mlp_256_128",
+        "mlp_64_128_64",
+    ],
+    "medium": [
+        "mlp_16",
+        "mlp_32",
+        "mlp_64",
+        "mlp_128",
+        "mlp_256",
+        "mlp_32_16",
+        "mlp_64_64",
+        "mlp_128_64",
+        "mlp_128_128",
+        "mlp_256_128",
+        "mlp_256_256",
+        "mlp_64_128",
+        "mlp_128_256",
+        "mlp_64_128_64",
+        "mlp_128_256_128",
+    ],
+    "large": [
+        "mlp_32",
+        "mlp_64",
+        "mlp_128",
+        "mlp_256",
+        "mlp_512",
+        "mlp_32_16",
+        "mlp_64_64",
+        "mlp_128_64",
+        "mlp_128_128",
+        "mlp_256_128",
+        "mlp_256_256",
+        "mlp_512_256",
+        "mlp_128_256",
+        "mlp_128_256_128",
+        "mlp_256_512_256",
+    ],
+}
+
+ARCHITECTURE_CONFIG_BY_NAME = {config["name"]: config for config in DEFAULT_ARCHITECTURE_GRID}
+
 
 @dataclass
 class LabelSpec:
@@ -115,6 +188,16 @@ class FeatureStore:
         if self.args.load_all:
             return self._get_all_embeddings(indices)
         return self._get_embeddings_chunked(indices)
+
+    def input_dim(self):
+        if self.feature_kind == "onehot":
+            return int(self.get([0]).shape[1])
+        if self._all_embeddings is not None:
+            return int(self._all_embeddings.shape[1])
+        for k in sorted(self.df[self.args.num_muts_colname].dropna().astype(int).unique()):
+            emb, _, _ = self._load_embedding_group(k)
+            return int(emb.shape[1])
+        raise FileNotFoundError(f"no embedding files found in {self.embedding_dir}")
 
     def iter_batches(self, indices, max_rows=None):
         indices = np.asarray(indices, dtype=int)
@@ -384,27 +467,47 @@ def require_existing_splits(label_root, args):
     validation_root = label_root / "resolved_splits" / "validation_splits"
     training_root = label_root / "resolved_splits" / "training_splits"
 
+    if args.resolve_architecture_only:
+        require_existing_architecture_only_splits(label_root, args)
+        return
+
     if args.architecture_resolution == "full":
         if not any((validation_root / "full").glob("*.json")):
             missing.append(str(validation_root / "full" / "*.json"))
 
     if args.train_type == "random":
-        for size in args.train_sizes:
-            for iteration in range(args.niters):
-                split_name = f"split_{int(size)}_{iteration + 1:03d}.json"
-                train_path = training_root / "random" / split_name
-                if not train_path.exists():
-                    missing.append(str(train_path))
-                if args.architecture_resolution == "random_internal":
-                    val_path = validation_root / "random" / split_name
-                    if not val_path.exists():
-                        missing.append(str(val_path))
+        if args.score_split_name or args.score_train_size is not None or args.score_split_iteration is not None:
+            split_name = resolve_score_split_name(args)
+            train_path = training_root / "random" / split_name
+            if not train_path.exists():
+                missing.append(str(train_path))
+            if args.architecture_resolution == "random_internal":
+                val_path = validation_root / "random" / split_name
+                if not val_path.exists():
+                    missing.append(str(val_path))
+        else:
+            for size in args.train_sizes:
+                for iteration in range(args.niters):
+                    split_name = f"split_{int(size)}_{iteration + 1:03d}.json"
+                    train_path = training_root / "random" / split_name
+                    if not train_path.exists():
+                        missing.append(str(train_path))
+                    if args.architecture_resolution == "random_internal":
+                        val_path = validation_root / "random" / split_name
+                        if not val_path.exists():
+                            missing.append(str(val_path))
 
     if args.architecture_resolution in {"less_than_K", "equal_to_K"}:
-        if args.min_muts is None or args.max_muts is None:
-            missing.append(f"{args.architecture_resolution} requires --min_muts/--max_muts split metadata")
+        if (
+            (args.min_muts is None and args.min_train_muts is None)
+            or (args.max_muts is None and args.max_test_muts is None)
+        ):
+            missing.append(
+                f"{args.architecture_resolution} requires mutation split metadata "
+                "(--min_muts/--max_muts or explicit train/test mutation bounds)"
+            )
         else:
-            for k in range(int(args.min_muts), int(args.max_muts)):
+            for k in mutation_train_k_values(args):
                 if args.architecture_resolution == "equal_to_K":
                     path = validation_root / "by_mutation" / "equal_to_K" / f"K_{k}" / "train_le_K_validate_K_plus_1.json"
                     if not path.exists():
@@ -415,9 +518,13 @@ def require_existing_splits(label_root, args):
                         missing.append(str(path / "*.json"))
 
     if args.architecture_resolution == "specific_K":
-        path = validation_root / "by_mutation" / "specific_K" / f"K_{int(args.specific_k)}"
-        if not any(path.glob("*.json")):
-            missing.append(str(path / "*.json"))
+        resolved_k = args.specific_k if args.specific_k is not None else args.resolve_k
+        if resolved_k is None:
+            missing.append("specific_K requires --specific_k or --resolve_k")
+        else:
+            path = validation_root / "by_mutation" / "specific_K" / f"K_{int(resolved_k)}"
+            if not any(path.glob("*.json")):
+                missing.append(str(path / "*.json"))
 
     if missing:
         preview = "\n".join(f"  - {item}" for item in missing[:20])
@@ -433,6 +540,57 @@ def require_existing_splits(label_root, args):
     print(f"[splits] available on disk: {count_available_splits(label_root)}")
 
 
+def require_existing_architecture_only_splits(label_root, args):
+    missing = []
+    label_root = Path(label_root)
+    validation_root = label_root / "resolved_splits" / "validation_splits"
+    mode = args.architecture_resolution
+
+    if mode == "full":
+        full_dir = validation_root / "full"
+        if not any(full_dir.glob("*.json")):
+            missing.append(str(full_dir / "*.json"))
+    elif mode == "random_internal":
+        split_name = resolve_random_internal_split_name(args)
+        path = validation_root / "random" / split_name
+        if not path.exists():
+            missing.append(str(path))
+    elif mode in {"less_than_K", "equal_to_K"}:
+        if args.resolve_k is None:
+            missing.append(f"{mode} requires --resolve_k")
+        elif mode == "equal_to_K":
+            path = validation_root / "by_mutation" / "equal_to_K" / f"K_{int(args.resolve_k)}" / "train_le_K_validate_K_plus_1.json"
+            if not path.exists():
+                missing.append(str(path))
+        else:
+            path = validation_root / "by_mutation" / "less_than_K" / f"K_{int(args.resolve_k)}"
+            if not any(path.glob("*.json")):
+                missing.append(str(path / "*.json"))
+    elif mode == "specific_K":
+        resolved_k = args.specific_k if args.specific_k is not None else args.resolve_k
+        if resolved_k is None:
+            missing.append("specific_K requires --specific_k or --resolve_k")
+        else:
+            path = validation_root / "by_mutation" / "specific_K" / f"K_{int(resolved_k)}"
+            if not any(path.glob("*.json")):
+                missing.append(str(path / "*.json"))
+    else:
+        missing.append(f"unsupported architecture resolution mode: {mode}")
+
+    if missing:
+        preview = "\n".join(f"  - {item}" for item in missing[:20])
+        more = "" if len(missing) <= 20 else f"\n  ... and {len(missing) - 20} more"
+        raise FileNotFoundError(
+            "required architecture split files are missing and split writing was not requested.\n"
+            f"{preview}{more}\n"
+            "Create them explicitly with --create_missing_splits, --make_splits_only, "
+            "--refresh, or --hard-refresh."
+        )
+
+    print("[splits] existing required architecture split files found; not creating or updating splits")
+    print(f"[splits] available on disk: {count_available_splits(label_root)}")
+
+
 def random_split(indices, train_fraction, rng):
     indices = np.asarray(indices, dtype=int)
     if len(indices) < 2:
@@ -440,6 +598,15 @@ def random_split(indices, train_fraction, rng):
     order = rng.permutation(indices)
     n_train = int(round(len(indices) * float(train_fraction)))
     n_train = min(max(n_train, 1), len(indices) - 1)
+    return order[:n_train].astype(int).tolist(), order[n_train:].astype(int).tolist()
+
+
+def random_split_train_size(indices, train_size, rng):
+    indices = np.asarray(indices, dtype=int)
+    if len(indices) < 2:
+        return indices.tolist(), []
+    order = rng.permutation(indices)
+    n_train = min(max(int(train_size), 1), len(indices) - 1)
     return order[:n_train].astype(int).tolist(), order[n_train:].astype(int).tolist()
 
 
@@ -465,6 +632,32 @@ def random_internal_fraction_plan(pool_size, args):
     return [(fraction, int(args.validation_niters)) for fraction in fractions]
 
 
+def mutation_min_train_muts(args) -> int:
+    value = args.min_train_muts if args.min_train_muts is not None else args.min_muts
+    if value is None:
+        raise ValueError("mutation training requires --min_muts or --min_train_muts")
+    return int(value)
+
+
+def mutation_max_test_muts(args) -> int:
+    value = args.max_test_muts if args.max_test_muts is not None else args.max_muts
+    if value is None:
+        raise ValueError("mutation training requires --max_muts or --max_test_muts")
+    return int(value)
+
+
+def mutation_max_train_muts(args) -> int:
+    if args.max_train_muts is not None:
+        return int(args.max_train_muts)
+    return mutation_max_test_muts(args) - 1
+
+
+def mutation_train_k_values(args):
+    if args.score_k is not None:
+        return [int(args.score_k)]
+    return range(mutation_min_train_muts(args), mutation_max_train_muts(args) + 1)
+
+
 def create_or_update_splits(df, label_root, args):
     print(f"[splits] resolving splits under {label_root}")
     print(
@@ -479,6 +672,27 @@ def create_or_update_splits(df, label_root, args):
         f"niters_per_fraction={int(args.validation_niters)} "
         f"min_val_points={int(args.random_internal_min_val_points)}"
     )
+    print(
+        "[splits] full validation defaults: "
+        f"fractions={list(args.validation_fraction_split_full)} "
+        f"train_sizes={list(args.validation_train_sizes_full)} "
+        f"niters={int(args.validation_niters_full)}"
+    )
+    print(
+        "[splits] mutation stochastic validation defaults: "
+        f"fractions={list(args.validation_fraction_split)} "
+        f"train_sizes={list(args.validation_train_sizes)} "
+        f"niters={int(args.validation_niters)}"
+    )
+    if (args.min_muts is not None or args.min_train_muts is not None) and (
+        args.max_muts is not None or args.max_test_muts is not None
+    ):
+        print(
+            "[splits] mutation bounds: "
+            f"min_train_muts={mutation_min_train_muts(args)} "
+            f"max_train_muts={mutation_max_train_muts(args)} "
+            f"max_test_muts={mutation_max_test_muts(args)}"
+        )
     rng = np.random.default_rng(args.random_seed)
     all_indices = np.arange(len(df), dtype=int)
     stats = {
@@ -522,8 +736,30 @@ def create_or_update_splits(df, label_root, args):
                     },
                 )
                 stats["full_validation_files"] += 1
+        for train_size in args.validation_train_sizes_full:
+            for iteration in range(args.validation_niters_full):
+                train_idx, val_idx = random_split_train_size(all_indices, train_size, rng)
 
-    if args.min_muts is not None and args.max_muts is not None:
+                # Assert to ensure no index leakage between train and validation sets
+                assert np.isin(train_idx, val_idx).sum() == 0, "Train and val index leakage detected"
+                assert np.isin(val_idx, train_idx).sum() == 0, "val and train index leakage detected"
+
+                write_json(
+                    full_dir / f"train_size_{int(train_size):05d}_iter_{iteration + 1:03d}.json",
+                    {
+                        "mode": "full",
+                        "train_size": int(train_size),
+                        "iteration": int(iteration + 1),
+                        "train_indices": train_idx,
+                        "val_indices": val_idx,
+                    },
+                )
+                stats["full_validation_files"] += 1
+
+    if (
+        (args.min_muts is not None or args.min_train_muts is not None)
+        and (args.max_muts is not None or args.max_test_muts is not None)
+    ):
         mutation_stats = write_mutation_splits(df, label_root, args, rng)
         for key, value in mutation_stats.items():
             stats[key] += value
@@ -538,6 +774,9 @@ def create_or_update_splits(df, label_root, args):
 
 def write_mutation_splits(df, label_root, args, rng):
     nmuts = df[args.num_muts_colname].astype(int).to_numpy()
+    min_train_muts = mutation_min_train_muts(args)
+    max_train_muts = mutation_max_train_muts(args)
+    max_test_muts = mutation_max_test_muts(args)
     validation_root = label_root / "resolved_splits" / "validation_splits" / "by_mutation"
     training_root = label_root / "resolved_splits" / "training_splits" / "by_mutation"
     stats = {
@@ -556,9 +795,9 @@ def write_mutation_splits(df, label_root, args, rng):
     # You will always test on > k. however: 
     # in the first case you will train on <= k, and validate on <= k
     # in the second case you will train on < k and validate on = k
-    for k in range(int(args.min_muts), int(args.max_muts) + 1):
-        train_le_k = np.where(nmuts <= k)[0].astype(int)
-        test_gt_k = np.where(nmuts > k)[0].astype(int)
+    for k in range(min_train_muts, max_test_muts + 1):
+        train_le_k = np.where((nmuts >= min_train_muts) & (nmuts <= k))[0].astype(int)
+        test_gt_k = np.where((nmuts > k) & (nmuts <= max_test_muts))[0].astype(int)
 
         # Assert to ensure no index leakage between train and test sets
         assert np.isin(train_le_k, test_gt_k).sum() == 0, "Train <= k and test > k index leakage detected"
@@ -572,6 +811,9 @@ def write_mutation_splits(df, label_root, args, rng):
                 {
                     "mode": "mutation",
                     "k": int(k),
+                    "min_train_muts": int(min_train_muts),
+                    "max_train_muts": int(max_train_muts),
+                    "max_test_muts": int(max_test_muts),
                     "train_indices": train_le_k.tolist(),
                     "test_indices": test_gt_k.tolist(),
                 },
@@ -584,25 +826,46 @@ def write_mutation_splits(df, label_root, args, rng):
         # and then train <= k and test on > K
         less_dir = validation_root / "less_than_K" / f"K_{k}"
         if args.refresh or not any(less_dir.glob("*.json")):
-            for iteration in range(args.validation_niters):
-                train_idx, val_idx = random_split(train_le_k, args.validation_fraction_split, rng)
+            for fraction in args.validation_fraction_split:
+                for iteration in range(args.validation_niters):
+                    train_idx, val_idx = random_split(train_le_k, fraction, rng)
 
-                # Assert to ensure no index leakage between train and validation sets when <= k
-                assert np.isin(train_idx, val_idx).sum() == 0, "Train <= k and validate <= k index leakage detected"
-                assert np.isin(val_idx, train_idx).sum() == 0, "validate <= k and train <= k index leakage detected"
+                    # Assert to ensure no index leakage between train and validation sets when <= k
+                    assert np.isin(train_idx, val_idx).sum() == 0, "Train <= k and validate <= k index leakage detected"
+                    assert np.isin(val_idx, train_idx).sum() == 0, "validate <= k and train <= k index leakage detected"
 
-                write_json(
-                    less_dir / f"iter_{iteration + 1:03d}.json",
-                    {
-                        "mode": "less_than_K",
-                        "k": int(k),
-                        "train_fraction": float(args.validation_fraction_split),
-                        "iteration": int(iteration + 1),
-                        "train_indices": train_idx,
-                        "val_indices": val_idx,
-                    },
-                )
-                stats["mutation_less_than_K_files"] += 1
+                    write_json(
+                        less_dir / f"fraction_{float(fraction):.3f}_iter_{iteration + 1:03d}.json",
+                        {
+                            "mode": "less_than_K",
+                            "k": int(k),
+                            "train_fraction": float(fraction),
+                            "iteration": int(iteration + 1),
+                            "train_indices": train_idx,
+                            "val_indices": val_idx,
+                        },
+                    )
+                    stats["mutation_less_than_K_files"] += 1
+            for train_size in args.validation_train_sizes:
+                for iteration in range(args.validation_niters):
+                    train_idx, val_idx = random_split_train_size(train_le_k, train_size, rng)
+
+                    # Assert to ensure no index leakage between train and validation sets when <= k
+                    assert np.isin(train_idx, val_idx).sum() == 0, "Train <= k and validate <= k index leakage detected"
+                    assert np.isin(val_idx, train_idx).sum() == 0, "validate <= k and train <= k index leakage detected"
+
+                    write_json(
+                        less_dir / f"train_size_{int(train_size):05d}_iter_{iteration + 1:03d}.json",
+                        {
+                            "mode": "less_than_K",
+                            "k": int(k),
+                            "train_size": int(train_size),
+                            "iteration": int(iteration + 1),
+                            "train_indices": train_idx,
+                            "val_indices": val_idx,
+                        },
+                    )
+                    stats["mutation_less_than_K_files"] += 1
 
 
         # here we set validation paradigm #2. If we train < k and validate on == k, 
@@ -637,25 +900,46 @@ def write_mutation_splits(df, label_root, args, rng):
         exact_k = np.where(nmuts == k)[0].astype(int)
         specific_dir = validation_root / "specific_K" / f"K_{k}"
         if args.refresh or not any(specific_dir.glob("*.json")):
-            for iteration in range(args.validation_niters):
-                train_idx, val_idx = random_split(exact_k, args.validation_fraction_split, rng)
+            for fraction in args.validation_fraction_split:
+                for iteration in range(args.validation_niters):
+                    train_idx, val_idx = random_split(exact_k, fraction, rng)
 
-                # Assert to ensure no index leakage between train and validation sets when == k
-                assert np.isin(train_idx, val_idx).sum() == 0, "Train == k and validate == k index leakage detected"
-                assert np.isin(val_idx, train_idx).sum() == 0, "validate == k and train == k index leakage detected"
+                    # Assert to ensure no index leakage between train and validation sets when == k
+                    assert np.isin(train_idx, val_idx).sum() == 0, "Train == k and validate == k index leakage detected"
+                    assert np.isin(val_idx, train_idx).sum() == 0, "validate == k and train == k index leakage detected"
 
-                write_json(
-                    specific_dir / f"iter_{iteration + 1:03d}.json",
-                    {
-                        "mode": "specific_K",
-                        "k": int(k),
-                        "train_fraction": float(args.validation_fraction_split),
-                        "iteration": int(iteration + 1),
-                        "train_indices": train_idx,
-                        "val_indices": val_idx,
-                    },
-                )
-                stats["mutation_specific_K_files"] += 1
+                    write_json(
+                        specific_dir / f"fraction_{float(fraction):.3f}_iter_{iteration + 1:03d}.json",
+                        {
+                            "mode": "specific_K",
+                            "k": int(k),
+                            "train_fraction": float(fraction),
+                            "iteration": int(iteration + 1),
+                            "train_indices": train_idx,
+                            "val_indices": val_idx,
+                        },
+                    )
+                    stats["mutation_specific_K_files"] += 1
+            for train_size in args.validation_train_sizes:
+                for iteration in range(args.validation_niters):
+                    train_idx, val_idx = random_split_train_size(exact_k, train_size, rng)
+
+                    # Assert to ensure no index leakage between train and validation sets when == k
+                    assert np.isin(train_idx, val_idx).sum() == 0, "Train == k and validate == k index leakage detected"
+                    assert np.isin(val_idx, train_idx).sum() == 0, "validate == k and train == k index leakage detected"
+
+                    write_json(
+                        specific_dir / f"train_size_{int(train_size):05d}_iter_{iteration + 1:03d}.json",
+                        {
+                            "mode": "specific_K",
+                            "k": int(k),
+                            "train_size": int(train_size),
+                            "iteration": int(iteration + 1),
+                            "train_indices": train_idx,
+                            "val_indices": val_idx,
+                        },
+                    )
+                    stats["mutation_specific_K_files"] += 1
 
     return stats
 
@@ -815,6 +1099,72 @@ def eval_batch_size(args):
     return max(max_rows, 1)
 
 
+def architecture_search_batch_sizes(n_train, input_dim):
+    n_train = int(n_train)
+    input_dim = max(int(input_dim), 1)
+    if n_train <= 0:
+        return 1, 1
+
+    target_bytes = 128 * 1024 * 1024
+    max_batch = 8192
+    bytes_per_input_row = input_dim * np.dtype(np.float32).itemsize
+    memory_limited = max(target_bytes // max(bytes_per_input_row, 1), 1)
+    maximum_batch_size = min(n_train, max_batch, int(memory_limited))
+    if maximum_batch_size < n_train:
+        maximum_batch_size = max(1, 2 ** int(math.floor(math.log2(maximum_batch_size))))
+    return int(maximum_batch_size), int(maximum_batch_size)
+
+
+def architecture_search_batch_size(n_train, input_dim):
+    return architecture_search_batch_sizes(n_train, input_dim)[0]
+
+
+def architecture_checkpoint_steps(args):
+    max_steps = args.architecture_max_steps
+    if max_steps is None:
+        max_steps = args.architecture_max_epochs
+    eval_every = args.architecture_eval_every_steps
+    if eval_every is None:
+        eval_every = args.architecture_eval_every
+    checkpoint_steps = list(range(int(eval_every), int(max_steps) + 1, int(eval_every)))
+    if not checkpoint_steps or checkpoint_steps[-1] != int(max_steps):
+        checkpoint_steps.append(int(max_steps))
+    return checkpoint_steps
+
+
+def architecture_fine_checkpoint_steps(args):
+    max_steps = args.architecture_fine_max_steps
+    if max_steps is None:
+        max_steps = args.architecture_max_steps
+    if max_steps is None:
+        max_steps = args.architecture_max_epochs
+
+    eval_every = args.architecture_fine_eval_every_steps
+    if eval_every is None:
+        eval_every = args.architecture_eval_every_steps
+    if eval_every is None:
+        eval_every = args.architecture_eval_every
+
+    checkpoint_steps = list(range(int(eval_every), int(max_steps) + 1, int(eval_every)))
+    if not checkpoint_steps or checkpoint_steps[-1] != int(max_steps):
+        checkpoint_steps.append(int(max_steps))
+    return checkpoint_steps
+
+
+def config_with_batch_and_lr(config, batch_size, reference_batch_size=None, lr_scale=None):
+    updated = dict(config)
+    old_batch_size = int(updated.get("batch_size", batch_size))
+    updated["batch_size"] = int(batch_size)
+    if lr_scale is not None:
+        updated["lr"] = float(updated.get("lr", 1e-3)) * float(lr_scale)
+        updated["lr_scaled_from"] = float(config.get("lr", 1e-3))
+        updated["lr_scale"] = float(lr_scale)
+    if reference_batch_size is not None and int(reference_batch_size) > 0:
+        updated["lr_reference_batch_size"] = int(reference_batch_size)
+    updated["batch_size_before_override"] = old_batch_size
+    return updated
+
+
 def set_random_seed(seed):
     np.random.seed(int(seed))
     torch.manual_seed(int(seed))
@@ -837,15 +1187,32 @@ def resolve_device(device):
     return str(device)
 
 
+def device_debug_string(device):
+    device = torch.device(device)
+    parts = [
+        f"device={device}",
+        f"cuda_available={torch.cuda.is_available()}",
+    ]
+    if device.type == "cuda" and torch.cuda.is_available():
+        index = 0 if device.index is None else int(device.index)
+        parts.extend(
+            [
+                f"cuda_device_index={index}",
+                f"cuda_device_name={torch.cuda.get_device_name(index)}",
+            ]
+        )
+    return " ".join(parts)
+
+
 def train_scorer_with_checkpoints(
     X_train,
     y_train,
     y_val,
     task_type,
     config,
-    checkpoint_epochs,
-    device,
-    random_seed,
+    checkpoint_epochs=None,
+    device="auto",
+    random_seed=0,
     X_val=None,
     feature_store=None,
     val_indices=None,
@@ -855,6 +1222,10 @@ def train_scorer_with_checkpoints(
     eval_max_rows=None,
     precision_k=100,
     selection_metric=None,
+    auto_batch_size=False,
+    fixed_batch_size=None,
+    checkpoint_steps=None,
+    verbose_debug_prints=False,
 ):
     set_random_seed(random_seed)
     device = torch.device(resolve_device(device))
@@ -883,50 +1254,78 @@ def train_scorer_with_checkpoints(
         lr=float(config.get("lr", 1e-3)),
         weight_decay=float(config.get("weight_decay", 0.0)),
     )
-    batch_size = int(config.get("batch_size", 64))
-    checkpoint_epochs = [int(epoch) for epoch in checkpoint_epochs]
-    checkpoint_set = set(checkpoint_epochs)
+    if fixed_batch_size is not None:
+        batch_size = min(int(fixed_batch_size), int(x_train.shape[0]))
+    elif auto_batch_size:
+        batch_size = architecture_search_batch_size(x_train.shape[0], x_train.shape[1])
+    else:
+        batch_size = int(config.get("batch_size", 64))
     checkpoint_scores = []
     checkpoint_metrics = []
 
-    for epoch in range(1, max(checkpoint_epochs) + 1):
-        model.train()
+    def evaluate_checkpoint():
+        model.eval()
+        if x_val is not None:
+            predictions = predict_array(model, x_val, task_type)
+        else:
+            # LOGIC: in case we cannot load all emeddings at once as they are heavy, predict
+            # batch by batch, aggreagate and then evaluate all together.
+            predictions = predict_feature_store_batches(
+                model,
+                feature_store,
+                val_indices,
+                task_type,
+                device,
+                max_rows=eval_max_rows,
+                normalize=normalize_eval,
+                mean=train_mean,
+                std=train_std,
+            )
+
+        metrics = evaluate_predictions(
+            y_val_tensor.detach().cpu().numpy(),
+            predictions,
+            task_type,
+            precision_k=precision_k,
+        )
+        checkpoint_metrics.append(metrics)
+        checkpoint_scores.append(primary_score(metrics, task_type, selection_metric=selection_metric))
+
+    if checkpoint_steps is not None:
+        checkpoint_steps = [int(step) for step in checkpoint_steps]
+        checkpoint_set = set(checkpoint_steps)
+        max_steps = max(checkpoint_steps)
         order = torch.randperm(x_train.shape[0], device=device)
-        for start in range(0, x_train.shape[0], batch_size):
-            batch_idx = order[start : start + batch_size]
+        cursor = 0
+        for step in range(1, max_steps + 1):
+            model.train()
+            if cursor >= x_train.shape[0]:
+                order = torch.randperm(x_train.shape[0], device=device)
+                cursor = 0
+            batch_idx = order[cursor : cursor + batch_size]
+            cursor += batch_size
             optimizer.zero_grad(set_to_none=True)
             output = model(x_train[batch_idx])
             loss = loss_fn(output, y_train_device[batch_idx])
             loss.backward()
             optimizer.step()
-        if epoch in checkpoint_set:
-            model.eval()
-            if x_val is not None:
-                predictions = predict_array(model, x_val, task_type)
-            else:
-                # LOGIC: in case we cannot load all emeddings at once as they are heavy, predict
-                # batch by batch, aggreagate and then evaluate all together.
-                predictions = predict_feature_store_batches(
-                    model,
-                    feature_store,
-                    val_indices,
-                    task_type,
-                    device,
-                    max_rows=eval_max_rows,
-                    normalize=normalize_eval,
-                    mean=train_mean,
-                    std=train_std,
-                )
-            
-            # eval after aggregatign or predicting right away for all
-            metrics = evaluate_predictions(
-                y_val_tensor.detach().cpu().numpy(),
-                predictions,
-                task_type,
-                precision_k=precision_k,
-            )
-            checkpoint_metrics.append(metrics)
-            checkpoint_scores.append(primary_score(metrics, task_type, selection_metric=selection_metric))
+            if step in checkpoint_set:
+                evaluate_checkpoint()
+    else:
+        checkpoint_epochs = [int(epoch) for epoch in checkpoint_epochs]
+        checkpoint_set = set(checkpoint_epochs)
+        for epoch in range(1, max(checkpoint_epochs) + 1):
+            model.train()
+            order = torch.randperm(x_train.shape[0], device=device)
+            for start in range(0, x_train.shape[0], batch_size):
+                batch_idx = order[start : start + batch_size]
+                optimizer.zero_grad(set_to_none=True)
+                output = model(x_train[batch_idx])
+                loss = loss_fn(output, y_train_device[batch_idx])
+                loss.backward()
+                optimizer.step()
+            if epoch in checkpoint_set:
+                evaluate_checkpoint()
     return {"checkpoint_scores": checkpoint_scores, "checkpoint_metrics": checkpoint_metrics}
 
 
@@ -1040,6 +1439,7 @@ def train_final_predictor_from_feature_store(
     device,
     random_seed,
     args,
+    steps=None,
 ):
     trained = train_predictor_from_feature_store(
         feature_store=feature_store,
@@ -1051,6 +1451,7 @@ def train_final_predictor_from_feature_store(
         device=device,
         random_seed=random_seed,
         args=args,
+        steps=steps,
     )
     return evaluate_trained_predictor_from_feature_store(
         trained,
@@ -1073,6 +1474,7 @@ def train_predictor_from_feature_store(
     device,
     random_seed,
     args,
+    steps=None,
 ):
     train_idx = np.asarray(train_idx, dtype=int)
     X_train = feature_store.get(train_idx)
@@ -1091,6 +1493,7 @@ def train_predictor_from_feature_store(
         device=device,
         random_seed=random_seed,
         output_dim=infer_output_dim(task_type, y),
+        steps=steps,
     )
     result.update({"normalize": normalize, "mean": mean, "std": std})
     return result
@@ -1137,6 +1540,7 @@ def train_predictor_model(
     device,
     random_seed,
     output_dim=None,
+    steps=None,
 ):
     set_random_seed(random_seed)
     device = torch.device(resolve_device(device))
@@ -1165,16 +1569,32 @@ def train_predictor_model(
     )
     batch_size = int(config.get("batch_size", 64))
 
-    for _ in range(int(epochs)):
-        model.train()
+    if steps is not None:
         order = torch.randperm(x_train.shape[0], device=device)
-        for start in range(0, x_train.shape[0], batch_size):
-            batch_idx = order[start : start + batch_size]
+        cursor = 0
+        for _ in range(int(steps)):
+            model.train()
+            if cursor >= x_train.shape[0]:
+                order = torch.randperm(x_train.shape[0], device=device)
+                cursor = 0
+            batch_idx = order[cursor : cursor + batch_size]
+            cursor += batch_size
             optimizer.zero_grad(set_to_none=True)
             output = model(x_train[batch_idx])
             loss = loss_fn(output, y_train_device[batch_idx])
             loss.backward()
             optimizer.step()
+    else:
+        for _ in range(int(epochs)):
+            model.train()
+            order = torch.randperm(x_train.shape[0], device=device)
+            for start in range(0, x_train.shape[0], batch_size):
+                batch_idx = order[start : start + batch_size]
+                optimizer.zero_grad(set_to_none=True)
+                output = model(x_train[batch_idx])
+                loss = loss_fn(output, y_train_device[batch_idx])
+                loss.backward()
+                optimizer.step()
     return {"model": model}
 
 
@@ -1188,6 +1608,8 @@ def evaluate_predictions(y_true, y_pred, task_type, precision_k=100):
         "roc_auc": np.nan,
         "precision": np.nan,
         "precision_at_k": np.nan,
+        "precision_0_at_k": np.nan,
+        "precision_1_at_k": np.nan,
         "recall": np.nan,
         "f1": np.nan,
         "accuracy": np.nan,
@@ -1215,6 +1637,8 @@ def evaluate_predictions(y_true, y_pred, task_type, precision_k=100):
     metrics["roc_auc"] = roc_auc(y_true, probabilities)
     ranking_score = probabilities[:, 1] if probabilities.shape[1] >= 2 else pred_labels
     metrics["precision_at_k"] = precision_at_k(y_true, ranking_score, k=precision_k)
+    metrics["precision_1_at_k"] = precision_at_k_for_class(y_true, probabilities, target_class=1, k=precision_k)
+    metrics["precision_0_at_k"] = precision_at_k_for_class(y_true, probabilities, target_class=0, k=precision_k)
     metrics["spearman"], metrics["spearman_p_value"] = spearman_with_pvalue(y_true, ranking_score)
     return metrics
 
@@ -1263,6 +1687,29 @@ def precision_at_k(y_true, scores, k=100):
     return float(np.mean(y_true[ranked] == 1))
 
 
+def precision_at_k_for_class(y_true, probabilities, target_class, k=100):
+    y_true = np.asarray(y_true).reshape(-1)
+    probabilities = np.asarray(probabilities)
+    if len(y_true) == 0:
+        return float("nan")
+    k = min(int(k), len(y_true))
+    if k <= 0:
+        return float("nan")
+
+    target_class = int(target_class)
+    if probabilities.ndim == 1:
+        scores = probabilities.reshape(-1)
+        if target_class == 0:
+            scores = -scores
+    elif target_class < probabilities.shape[1]:
+        scores = probabilities[:, target_class]
+    else:
+        return float("nan")
+
+    ranked = np.argsort(-scores)[:k]
+    return float(np.mean(y_true[ranked] == target_class))
+
+
 def primary_score(metrics, task_type, selection_metric=None):
     metric = selection_metric
     if metric is None:
@@ -1297,7 +1744,44 @@ def architecture_config(config, index):
     return safe
 
 
-def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, args):
+def architecture_size_label_for_train_rows(n_train):
+    n_train = int(n_train)
+    if n_train < 100:
+        return "tiny"
+    if n_train < 1000:
+        return "small"
+    if n_train < 10000:
+        return "medium"
+    return "large"
+
+
+def architecture_grid_for_resamples(resamples):
+    train_counts = [len(resample.get("train_indices") or []) for resample in resamples]
+    if resamples and all(resample.get("mode") == "full" for resample in resamples):
+        size_label = "medium"
+        representative = int(np.median(train_counts)) if train_counts else 0
+    elif train_counts:
+        representative = int(np.median(train_counts))
+        size_label = architecture_size_label_for_train_rows(representative)
+    else:
+        representative = 0
+        size_label = "medium"
+
+    names = ARCHITECTURE_GRID_NAMES_BY_SIZE[size_label]
+    missing = [name for name in names if name not in ARCHITECTURE_CONFIG_BY_NAME]
+    if missing:
+        raise ValueError(f"architecture grid {size_label!r} contains unknown names: {missing}")
+    grid = [architecture_config(ARCHITECTURE_CONFIG_BY_NAME[name], idx) for idx, name in enumerate(names)]
+    return {
+        "size_label": size_label,
+        "representative_train_rows": representative,
+        "min_train_rows": min(train_counts) if train_counts else 0,
+        "max_train_rows": max(train_counts) if train_counts else 0,
+        "grid": grid,
+    }
+
+
+def resolve_architecture_epoch_based(feature_store, y, label_spec, resamples, cache_path, args):
     cache_path = Path(cache_path)
     best_path = cache_path / "best_architecture.json"
 
@@ -1315,6 +1799,11 @@ def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, ar
         )
         return cached
 
+    if args.require_resolved_architecture:
+        raise FileNotFoundError(
+            f"resolved architecture cache is missing: {best_path}. "
+            "Run the resolve architecture scripts first, or remove --require_resolved_architecture."
+        )
 
     # We need to resolve the architecture / best epoch to train
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -1322,14 +1811,19 @@ def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, ar
     if not checkpoint_epochs or checkpoint_epochs[-1] != int(args.architecture_max_epochs):
         checkpoint_epochs.append(int(args.architecture_max_epochs))
 
-    # define the grid of all architectures
-    grid = [architecture_config(config, idx) for idx, config in enumerate(DEFAULT_ARCHITECTURE_GRID)]
+    # define the grid according to the amount of train data used during architecture validation
+    grid_info = architecture_grid_for_resamples(resamples)
+    grid = grid_info["grid"]
     scores = np.full((len(grid), len(checkpoint_epochs), len(resamples), int(args.architecture_n_seeds)), np.nan, dtype=np.float32)
     rows = []
     metric_name = architecture_selection_metric(label_spec.task_type, resamples)
     total_candidates = len(grid) * len(checkpoint_epochs) * len(resamples) * int(args.architecture_n_seeds)
     print(
         "[architecture] no cached selection; searching "
+        f"grid={grid_info['size_label']} "
+        f"train_rows=min:{grid_info['min_train_rows']} "
+        f"median:{grid_info['representative_train_rows']} "
+        f"max:{grid_info['max_train_rows']} "
         f"architectures={len(grid)} checkpoints={len(checkpoint_epochs)} "
         f"resamples={len(resamples)} seeds={int(args.architecture_n_seeds)} "
         f"total_evaluations={total_candidates}",
@@ -1408,6 +1902,8 @@ def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, ar
                     eval_max_rows=eval_batch_size(args),
                     precision_k=args.precision_k,
                     selection_metric=metric_name,
+                    auto_batch_size=args.auto_architecture_batch_size,
+                    verbose_debug_prints=args.verbose_debug_prints,
                 )
                 # Document what is the checkpoint score
                 for ckpt_idx, epoch in enumerate(checkpoint_epochs):
@@ -1454,6 +1950,10 @@ def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, ar
         "best_epoch": best_epoch,
         "best_score": best_score,
         "metric_name": metric_name,
+        "architecture_grid_size_label": grid_info["size_label"],
+        "representative_train_rows": grid_info["representative_train_rows"],
+        "min_train_rows": grid_info["min_train_rows"],
+        "max_train_rows": grid_info["max_train_rows"],
         "checkpoint_epochs": checkpoint_epochs,
         "architecture_grid": grid,
         "resample_metadata": resamples,
@@ -1462,6 +1962,297 @@ def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, ar
     pd.DataFrame(rows).to_csv(cache_path / "architecture_scores.csv", index=False)
     print(f"[architecture] selected {best_config['name']} epoch={best_epoch} {metric_name}={best_score:.4g}")
     return payload
+
+
+def run_step_architecture_stage(
+    feature_store,
+    y,
+    label_spec,
+    resamples,
+    grid,
+    checkpoint_steps,
+    args,
+    metric_name,
+    *,
+    stage,
+    auto_batch_size=False,
+    fixed_batch_size=None,
+    seed_offset=0,
+):
+    scores = np.full(
+        (len(grid), len(checkpoint_steps), len(resamples), int(args.architecture_n_seeds)),
+        np.nan,
+        dtype=np.float32,
+    )
+    rows = []
+    for arch_idx, config in enumerate(grid):
+        print(
+            f"[architecture] {stage} {feature_store.model_name}: "
+            f"{config['name']} ({arch_idx + 1}/{len(grid)})",
+            flush=True,
+        )
+        for resample_idx, resample in enumerate(resamples):
+            train_idx = np.asarray(resample["train_indices"], dtype=int)
+            val_idx = np.asarray(resample["val_indices"], dtype=int)
+            assert np.isin(train_idx, val_idx).sum() == 0, "Train and validation index leakage detected"
+            assert np.isin(val_idx, train_idx).sum() == 0, "validation and train index leakage detected"
+            if len(train_idx) == 0 or len(val_idx) == 0:
+                continue
+
+            X_train = feature_store.get(train_idx)
+            normalize_eval = args.normalize_embeddings and feature_store.feature_kind == "embedding"
+            if normalize_eval:
+                train_mean, train_std = normalization_params(X_train)
+                X_train = apply_normalization(X_train, train_mean, train_std)
+            else:
+                train_mean, train_std = None, None
+
+            stream_val = stream_eval_in_case_of_limited_memory(feature_store, val_idx, args)
+            if stream_val:
+                X_val = None
+                print(
+                    f"[architecture] chunking emeddings (instead of loading all) total validation embeddings: rows={len(val_idx)} "
+                    f"batch_size={eval_batch_size(args)}",
+                    flush=True,
+                )
+            else:
+                X_val = feature_store.get(val_idx)
+                if normalize_eval:
+                    X_val = apply_normalization(X_val, train_mean, train_std)
+
+            for seed_idx in range(int(args.architecture_n_seeds)):
+                seed = int(args.random_seed) + int(seed_offset) + arch_idx * 1_000_000 + resample_idx * 1_000 + seed_idx
+                result = train_scorer_with_checkpoints(
+                    X_train=X_train,
+                    y_train=y[train_idx],
+                    y_val=y[val_idx],
+                    task_type=label_spec.task_type,
+                    config=config,
+                    checkpoint_epochs=None,
+                    checkpoint_steps=checkpoint_steps,
+                    device=args.device,
+                    random_seed=seed,
+                    X_val=X_val,
+                    feature_store=feature_store if stream_val else None,
+                    val_indices=val_idx if stream_val else None,
+                    normalize_eval=normalize_eval,
+                    train_mean=train_mean,
+                    train_std=train_std,
+                    eval_max_rows=eval_batch_size(args),
+                    precision_k=args.precision_k,
+                    selection_metric=metric_name,
+                    auto_batch_size=auto_batch_size,
+                    fixed_batch_size=fixed_batch_size,
+                    verbose_debug_prints=args.verbose_debug_prints,
+                )
+                for ckpt_idx, step in enumerate(checkpoint_steps):
+                    score = result["checkpoint_scores"][ckpt_idx]
+                    scores[arch_idx, ckpt_idx, resample_idx, seed_idx] = np.nan if not np.isfinite(score) else float(score)
+                    rows.append(
+                        {
+                            "stage": stage,
+                            "architecture_index": arch_idx,
+                            "architecture_name": config["name"],
+                            "step": int(step),
+                            "batch_size": "auto" if auto_batch_size else fixed_batch_size,
+                            "resample_index": resample_idx,
+                            "seed_index": seed_idx,
+                            "seed": seed,
+                            "metric_name": metric_name,
+                            "score": None if not np.isfinite(score) else float(score),
+                            "metrics": json.dumps(result["checkpoint_metrics"][ckpt_idx]),
+                        }
+                    )
+            del X_train, X_val
+            gc.collect()
+    return scores, rows
+
+
+def select_architecture_checkpoint(grid, checkpoint_values, median_scores, args):
+    if np.all(np.isnan(median_scores)):
+        return 0, len(checkpoint_values) - 1, float("nan")
+    best_score = float(np.nanmax(median_scores))
+    eligible = np.argwhere(median_scores >= best_score - float(args.indistinguishable_tolerance))
+    best_arch_idx, best_ckpt_idx = min(
+        ((int(a), int(c)) for a, c in eligible),
+        key=lambda item: (
+            len(grid[item[0]].get("hidden_layers", [])),
+            sum(grid[item[0]].get("hidden_layers", [])),
+            checkpoint_values[item[1]],
+            -float(median_scores[item[0], item[1]]),
+        ),
+    )
+    return best_arch_idx, best_ckpt_idx, best_score
+
+
+def top_architecture_indices(median_scores, n_top):
+    if np.all(np.isnan(median_scores)):
+        return list(range(min(int(n_top), median_scores.shape[0])))
+    arch_scores = np.nanmax(median_scores, axis=1)
+    order = sorted(
+        range(len(arch_scores)),
+        key=lambda idx: (not np.isfinite(arch_scores[idx]), -float(arch_scores[idx]) if np.isfinite(arch_scores[idx]) else 0.0),
+    )
+    return order[: min(int(n_top), len(order))]
+
+
+def resolve_architecture_step_based(feature_store, y, label_spec, resamples, cache_path, args):
+    cache_path = Path(cache_path)
+    best_path = cache_path / "best_architecture.json"
+    if best_path.is_file() and not args.refresh_architecture:
+        cached = read_json(best_path)
+        print(f"[architecture] using cached {best_path}")
+        print(
+            "[architecture] cached selection: "
+            f"config={cached.get('best_config')} "
+            f"best_steps={cached.get('best_steps')} "
+            f"best_score={cached.get('best_score')} "
+            f"metric={cached.get('metric_name')}",
+            flush=True,
+        )
+        return cached
+    if args.require_resolved_architecture:
+        raise FileNotFoundError(
+            f"resolved architecture cache is missing: {best_path}. "
+            "Run the resolve architecture scripts first, or remove --require_resolved_architecture."
+        )
+
+    cache_path.mkdir(parents=True, exist_ok=True)
+    coarse_checkpoint_steps = architecture_checkpoint_steps(args)
+    fine_checkpoint_steps = architecture_fine_checkpoint_steps(args)
+    grid_info = architecture_grid_for_resamples(resamples)
+    grid = grid_info["grid"]
+    metric_name = architecture_selection_metric(label_spec.task_type, resamples)
+    total_coarse = len(grid) * len(coarse_checkpoint_steps) * len(resamples) * int(args.architecture_n_seeds)
+    print(
+        "[architecture] no cached selection; two-stage step search "
+        f"grid={grid_info['size_label']} "
+        f"train_rows=min:{grid_info['min_train_rows']} "
+        f"median:{grid_info['representative_train_rows']} "
+        f"max:{grid_info['max_train_rows']} "
+        f"coarse_architectures={len(grid)} top_k={int(args.architecture_top_k)} "
+        f"coarse_checkpoint_steps={coarse_checkpoint_steps} "
+        f"fine_checkpoint_steps={fine_checkpoint_steps} "
+        f"resamples={len(resamples)} "
+        f"seeds={int(args.architecture_n_seeds)} coarse_total_evaluations={total_coarse}",
+        flush=True,
+    )
+    if metric_name == "negative_mse":
+        print(
+            "[architecture] equal_to_K validation has one row; "
+            "selecting by negative MSE instead of correlation",
+            flush=True,
+        )
+    input_dim = feature_store.input_dim()
+    auto_batch_summary = {
+        "min": architecture_search_batch_size(grid_info["min_train_rows"], input_dim),
+        "median": architecture_search_batch_size(grid_info["representative_train_rows"], input_dim),
+        "max": architecture_search_batch_size(grid_info["max_train_rows"], input_dim),
+    }
+    print(
+        "[architecture] coarse auto batch sizes: "
+        f"input_dim={int(input_dim)} "
+        f"min_train_batch={auto_batch_summary['min']} "
+        f"median_train_batch={auto_batch_summary['median']} "
+        f"max_train_batch={auto_batch_summary['max']}",
+        flush=True,
+    )
+
+    coarse_scores, coarse_rows = run_step_architecture_stage(
+        feature_store,
+        y,
+        label_spec,
+        resamples,
+        grid,
+        coarse_checkpoint_steps,
+        args,
+        metric_name,
+        stage="coarse",
+        auto_batch_size=True,
+        seed_offset=0,
+    )
+    coarse_median = np.nanmedian(coarse_scores, axis=(2, 3))
+    top_indices = top_architecture_indices(coarse_median, args.architecture_top_k)
+    fine_grid = [grid[index] for index in top_indices]
+    total_fine = len(fine_grid) * len(fine_checkpoint_steps) * len(resamples) * int(args.architecture_n_seeds)
+    print(
+        "[architecture] coarse top architectures: "
+        + ", ".join(config["name"] for config in fine_grid)
+        + f"; fine_total_evaluations={total_fine}",
+        flush=True,
+    )
+
+    fine_batch = int(args.architecture_fine_batch_size)
+    final_batch = int(args.architecture_final_batch_size)
+    fine_scores, fine_rows = run_step_architecture_stage(
+        feature_store,
+        y,
+        label_spec,
+        resamples,
+        fine_grid,
+        fine_checkpoint_steps,
+        args,
+        metric_name,
+        stage="fine",
+        fixed_batch_size=fine_batch,
+        seed_offset=100_000_000,
+    )
+    fine_median = np.nanmedian(fine_scores, axis=(2, 3))
+    best_arch_idx, best_step_idx, best_score = select_architecture_checkpoint(
+        fine_grid,
+        fine_checkpoint_steps,
+        fine_median,
+        args,
+    )
+    fine_config = fine_grid[best_arch_idx]
+    best_steps = int(fine_checkpoint_steps[best_step_idx])
+    final_config = config_with_batch_and_lr(
+        fine_config,
+        final_batch,
+        reference_batch_size=fine_batch,
+        lr_scale=args.architecture_final_lr_scale,
+    )
+    payload = {
+        "best_config": final_config,
+        "fine_stage_config": fine_config,
+        "best_steps": best_steps,
+        "best_epoch": best_steps,
+        "best_score": best_score,
+        "metric_name": metric_name,
+        "architecture_resolution_protocol": "two_stage_step",
+        "architecture_grid_size_label": grid_info["size_label"],
+        "representative_train_rows": grid_info["representative_train_rows"],
+        "min_train_rows": grid_info["min_train_rows"],
+        "max_train_rows": grid_info["max_train_rows"],
+        "checkpoint_steps": fine_checkpoint_steps,
+        "coarse_checkpoint_steps": coarse_checkpoint_steps,
+        "fine_checkpoint_steps": fine_checkpoint_steps,
+        "architecture_grid": grid,
+        "coarse_top_indices": top_indices,
+        "coarse_top_architectures": [grid[index]["name"] for index in top_indices],
+        "fine_architecture_grid": fine_grid,
+        "fine_batch_size": fine_batch,
+        "final_batch_size": final_batch,
+        "final_lr_scale": float(args.architecture_final_lr_scale),
+        "resample_metadata": resamples,
+    }
+    write_json(best_path, payload)
+    pd.DataFrame(coarse_rows + fine_rows).to_csv(cache_path / "architecture_scores.csv", index=False)
+    print(
+        "[architecture] selected "
+        f"{final_config['name']} steps={best_steps} "
+        f"fine_batch={fine_batch} final_batch={final_batch} "
+        f"lr={final_config.get('lr')} lr_scale={float(args.architecture_final_lr_scale):.6g} "
+        f"{metric_name}={best_score:.4g}",
+        flush=True,
+    )
+    return payload
+
+
+def resolve_architecture(feature_store, y, label_spec, resamples, cache_path, args):
+    if args.two_stage_architecture_resolution:
+        return resolve_architecture_step_based(feature_store, y, label_spec, resamples, cache_path, args)
+    return resolve_architecture_epoch_based(feature_store, y, label_spec, resamples, cache_path, args)
 
 
 def architecture_cache_path(label_root, feature_store, mode, k=None, split_name=None, specific_k=None):
@@ -1520,6 +2311,57 @@ def resolve_for_mode(feature_store, y, label_spec, label_root, mode, args, k=Non
     return resolve_architecture(feature_store, y, label_spec, resamples, cache_path, args)
 
 
+def resolve_architecture_only(feature_store, y, label_spec, label_root, args):
+    mode = args.architecture_resolution
+    if mode == "full":
+        return [resolve_for_mode(feature_store, y, label_spec, label_root, "full", args)]
+    if mode == "random_internal":
+        split_name = resolve_random_internal_split_name(args)
+        return [
+            resolve_for_mode(
+                feature_store,
+                y,
+                label_spec,
+                label_root,
+                "random_internal",
+                args,
+                split_name=split_name,
+            )
+        ]
+    if mode in {"less_than_K", "equal_to_K"}:
+        if args.resolve_k is None:
+            raise ValueError(f"--resolve_architecture_only with {mode} requires --resolve_k")
+        return [resolve_for_mode(feature_store, y, label_spec, label_root, mode, args, k=args.resolve_k)]
+    if mode == "specific_K":
+        resolved_k = args.specific_k if args.specific_k is not None else args.resolve_k
+        if resolved_k is None:
+            raise ValueError("--resolve_architecture_only with specific_K requires --specific_k or --resolve_k")
+        return [resolve_for_mode(feature_store, y, label_spec, label_root, mode, args, k=resolved_k)]
+    raise ValueError(f"unsupported architecture resolution mode: {mode}")
+
+
+def resolve_random_internal_split_name(args):
+    if args.resolve_split_name:
+        return str(args.resolve_split_name)
+    if args.resolve_train_size is None or args.resolve_split_iteration is None:
+        raise ValueError(
+            "--resolve_architecture_only with random_internal requires "
+            "--resolve_split_name or both --resolve_train_size and --resolve_split_iteration"
+        )
+    return f"split_{int(args.resolve_train_size)}_{int(args.resolve_split_iteration):03d}.json"
+
+
+def resolve_score_split_name(args):
+    if args.score_split_name:
+        return str(args.score_split_name)
+    if args.score_train_size is None or args.score_split_iteration is None:
+        raise ValueError(
+            "scoring a specific random split requires --score_split_name or both "
+            "--score_train_size and --score_split_iteration"
+        )
+    return f"split_{int(args.score_train_size)}_{int(args.score_split_iteration):03d}.json"
+
+
 def run_mutation_training(df, feature_store, y, label_spec, label_root, args):
     # Architecfture resolving of random internal is relevant only
     # when we are re-splitting the random train into train-val to figure out best training architecture
@@ -1537,10 +2379,14 @@ def run_mutation_training(df, feature_store, y, label_spec, label_root, args):
         full_arch = None
 
     # For each K we are training on
-    for k in range(int(args.min_muts), int(args.max_muts)):
+    min_train_muts = mutation_min_train_muts(args)
+    max_test_muts = mutation_max_test_muts(args)
+    k_values = mutation_train_k_values(args)
+
+    for k in k_values:
         
         # figure ou training idices
-        train_idx = np.where((nmuts >= int(args.min_muts)) & (nmuts <= k))[0].astype(int)
+        train_idx = np.where((nmuts >= min_train_muts) & (nmuts <= k))[0].astype(int)
         if len(train_idx) == 0:
             print(f"[run] skipping K={k}; no training rows")
             continue
@@ -1562,16 +2408,17 @@ def run_mutation_training(df, feature_store, y, label_spec, label_root, args):
             y=y,
             task_type=label_spec.task_type,
             config=arch["best_config"],
-            epochs=arch["best_epoch"],
+            epochs=arch.get("best_epoch", arch.get("best_steps")),
             device=args.device,
             random_seed=args.random_seed + k * 10_000,
             args=args,
+            steps=arch.get("best_steps"),
         )
         
         # Now for every train mutation from K + 1 to max K, evaluate performance
         # best on the best model we trained, given the model selection we've done.
         rows = []
-        for test_k in range(k + 1, int(args.max_muts) + 1):
+        for test_k in range(k + 1, max_test_muts + 1):
             # train indces == k in K
             test_idx = np.where(nmuts == test_k)[0].astype(int)
 
@@ -1607,11 +2454,14 @@ def run_mutation_training(df, feature_store, y, label_spec, label_root, args):
                     "classifier": feature_store.classifier_label,
                     "model_name": feature_store.model_name,
                     "architecture_name": arch["best_config"]["name"],
-                    "best_epoch": int(arch["best_epoch"]),
+                    "best_epoch": int(arch.get("best_epoch", arch.get("best_steps"))),
+                    "best_steps": None if arch.get("best_steps") is None else int(arch["best_steps"]),
                     "architecture_resolution": args.architecture_resolution,
                     "roc_auc": metrics["roc_auc"],
                     "precision": metrics["precision"],
                     "precision_at_k": metrics["precision_at_k"],
+                    "precision_0_at_k": metrics["precision_0_at_k"],
+                    "precision_1_at_k": metrics["precision_1_at_k"],
                     "precision_k": int(args.precision_k),
                     "recall": metrics["recall"],
                     "f1": metrics["f1"],
@@ -1660,7 +2510,12 @@ def run_random_training(df, feature_store, y, label_spec, label_root, args):
         
         rows = []
 
-        for split_path in sorted(training_dir.glob(f"split_{int(size)}_*.json")):
+        if args.score_split_name or args.score_train_size is not None or args.score_split_iteration is not None:
+            split_paths = [training_dir / resolve_score_split_name(args)]
+        else:
+            split_paths = sorted(training_dir.glob(f"split_{int(size)}_*.json"))
+
+        for split_path in split_paths:
             payload = read_json(split_path)
             train_idx = np.asarray(payload["train_indices"], dtype=int)
             test_idx = np.asarray(payload["test_indices"], dtype=int)
@@ -1702,10 +2557,11 @@ def run_random_training(df, feature_store, y, label_spec, label_root, args):
                 y=y,
                 task_type=label_spec.task_type,
                 config=arch["best_config"],
-                epochs=arch["best_epoch"],
+                epochs=arch.get("best_epoch", arch.get("best_steps")),
                 device=args.device,
                 random_seed=args.random_seed + int(size) * 10_000 + int(payload["iteration"]),
                 args=args,
+                steps=arch.get("best_steps"),
             )
 
             metrics = result["metrics"]
@@ -1720,11 +2576,14 @@ def run_random_training(df, feature_store, y, label_spec, label_root, args):
                     "model_name": feature_store.model_name,
                     "split_name": split_path.stem,
                     "architecture_name": arch["best_config"]["name"],
-                    "best_epoch": int(arch["best_epoch"]),
+                    "best_epoch": int(arch.get("best_epoch", arch.get("best_steps"))),
+                    "best_steps": None if arch.get("best_steps") is None else int(arch["best_steps"]),
                     "architecture_resolution": args.architecture_resolution,
                     "roc_auc": metrics["roc_auc"],
                     "precision": metrics["precision"],
                     "precision_at_k": metrics["precision_at_k"],
+                    "precision_0_at_k": metrics["precision_0_at_k"],
+                    "precision_1_at_k": metrics["precision_1_at_k"],
                     "precision_k": int(args.precision_k),
                     "recall": metrics["recall"],
                     "f1": metrics["f1"],
@@ -1736,7 +2595,10 @@ def run_random_training(df, feature_store, y, label_spec, label_root, args):
         rows_by_size[int(size)] = rows
         out_dir = label_root / "results" / "random" / args.architecture_resolution / feature_store.model_name
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"evaluation_train_size_{int(size)}.csv"
+        if args.score_split_name or args.score_train_size is not None or args.score_split_iteration is not None:
+            out_path = out_dir / f"evaluation_train_size_{int(size)}_{split_paths[0].stem}.csv"
+        else:
+            out_path = out_dir / f"evaluation_train_size_{int(size)}.csv"
         pd.DataFrame(rows).to_csv(out_path, index=False)
 
         print(f"[run] wrote {out_path}")
@@ -1758,35 +2620,60 @@ def parse_args():
     parser.add_argument("--num_muts_colname", default="num_muts")
     parser.add_argument("--first_mutation_col")
     parser.add_argument("--last_mutation_col")
-    parser.add_argument("--train_type", choices=["random", "mutation"], required=True)
+    parser.add_argument("--train_type", choices=["random", "mutation"])
     parser.add_argument("--min_muts", type=int)
     parser.add_argument("--max_muts", type=int)
+    parser.add_argument("--min_train_muts", type=int)
+    parser.add_argument("--max_train_muts", type=int)
+    parser.add_argument("--max_test_muts", type=int)
     parser.add_argument("--train_sizes", type=int, nargs="*", default=[])
     parser.add_argument("--niters", type=int, default=10)
     parser.add_argument("--validation_niters", type=int, default=5)
-    parser.add_argument("--validation_fraction_split", type=float, default=0.75)
+    parser.add_argument("--validation_fraction_split", type=float, nargs="*", default=[0.25, 0.5, 0.75])
+    parser.add_argument("--validation_train_sizes", type=int, nargs="*", default=[])
     parser.add_argument("--random_internal_validation_fraction_split", type=float, nargs="*", default=[0.5, 0.75])
     parser.add_argument("--random_internal_min_val_points", type=int, default=5)
-    parser.add_argument("--validation_niters_full", type=int, default=15)
-    parser.add_argument("--validation_fraction_split_full", type=float, nargs="*", default=[0.25, 0.5, 0.75, 0.9])
+    parser.add_argument("--validation_niters_full", type=int, default=5)
+    parser.add_argument("--validation_fraction_split_full", type=float, nargs="*", default=[0.25, 0.5, 0.75])
+    parser.add_argument("--validation_train_sizes_full", type=int, nargs="*", default=[])
     parser.add_argument(
         "--architecture_resolution",
         choices=["full", "less_than_K", "equal_to_K", "specific_K", "random_internal"],
         required=True,
     )
     parser.add_argument("--specific_k", type=int)
-    parser.add_argument("--architecture_max_epochs", type=int, default=500)
-    parser.add_argument("--architecture_eval_every", type=int, default=10)
-    parser.add_argument("--architecture_n_seeds", type=int, default=3)
+    parser.add_argument("--resolve_architecture_only", action="store_true")
+    parser.add_argument("--resolve_split_name")
+    parser.add_argument("--resolve_train_size", type=int)
+    parser.add_argument("--resolve_split_iteration", type=int)
+    parser.add_argument("--resolve_k", type=int)
+    parser.add_argument("--score_split_name")
+    parser.add_argument("--score_train_size", type=int)
+    parser.add_argument("--score_split_iteration", type=int)
+    parser.add_argument("--score_k", type=int)
+    parser.add_argument("--architecture_max_epochs", type=int, default=300)
+    parser.add_argument("--architecture_eval_every", type=int, default=20)
+    parser.add_argument("--architecture_max_steps", type=int)
+    parser.add_argument("--architecture_eval_every_steps", type=int)
+    parser.add_argument("--architecture_fine_max_steps", type=int)
+    parser.add_argument("--architecture_fine_eval_every_steps", type=int)
+    parser.add_argument("--architecture_n_seeds", type=int, default=1)
+    parser.add_argument("--two_stage_architecture_resolution", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--architecture_top_k", type=int, default=3)
+    parser.add_argument("--architecture_fine_batch_size", type=int, default=128)
+    parser.add_argument("--architecture_final_batch_size", type=int, default=64)
+    parser.add_argument("--architecture_final_lr_scale", type=float, default=math.sqrt(2.0))
+    parser.add_argument("--auto_architecture_batch_size", action="store_true")
     parser.add_argument("--precision_k", type=int, default=100)
     parser.add_argument("--indistinguishable_tolerance", type=float, default=0.01)
     parser.add_argument("--mean_embeddings", action="store_true")
     parser.add_argument("--normalize_embeddings", action="store_true")
     parser.add_argument("--load_all", action="store_true")
-    parser.add_argument("--maximum_embeddings_to_load", type=int, default=5000)
+    parser.add_argument("--maximum_embeddings_to_load", type=int, default=20000)
     parser.add_argument("--cache_embedding_chunks", action="store_true")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--refresh_architecture", action="store_true")
+    parser.add_argument("--require_resolved_architecture", action="store_true")
     parser.add_argument("--hard_refresh", "--hard-refresh", dest="hard_refresh", action="store_true")
     parser.add_argument("--create_missing_splits", action="store_true")
     parser.add_argument("--make_splits_only", action="store_true")
@@ -1801,17 +2688,54 @@ def validate_args(args):
         raise ValueError("choose --onehot and/or at least one --embedding")
     if args.regressor and (args.classifier or args.classifier_percentile is not None or args.classifier_value is not None):
         raise ValueError("--regressor cannot be combined with classifier flags")
-    if args.train_type == "mutation":
-        if args.min_muts is None or args.max_muts is None:
-            raise ValueError("--train_type mutation requires --min_muts and --max_muts")
-        if args.max_muts <= args.min_muts:
-            raise ValueError("--max_muts must be greater than --min_muts")
-    if args.train_type == "random" and not args.train_sizes:
+    if args.train_type is None and not args.resolve_architecture_only:
+        raise ValueError("--train_type is required unless --resolve_architecture_only is set")
+    if args.train_type == "mutation" and not args.resolve_architecture_only:
+        min_train_muts = mutation_min_train_muts(args)
+        max_train_muts = mutation_max_train_muts(args)
+        max_test_muts = mutation_max_test_muts(args)
+        if max_train_muts < min_train_muts:
+            raise ValueError("--max_train_muts must be >= --min_train_muts")
+        if max_test_muts <= max_train_muts:
+            raise ValueError("--max_test_muts must be greater than --max_train_muts")
+    if args.train_type == "random" and not args.train_sizes and not args.resolve_architecture_only:
         raise ValueError("--train_type random requires --train_sizes")
-    if args.architecture_resolution == "specific_K" and args.specific_k is None:
+    if args.architecture_resolution == "specific_K" and args.specific_k is None and not (
+        args.resolve_architecture_only and args.resolve_k is not None
+    ):
         raise ValueError("--architecture_resolution specific_K requires --specific_k")
     if args.precision_k <= 0:
         raise ValueError("--precision_k must be positive")
+    if args.architecture_top_k <= 0:
+        raise ValueError("--architecture_top_k must be positive")
+    if args.architecture_fine_batch_size <= 0:
+        raise ValueError("--architecture_fine_batch_size must be positive")
+    if args.architecture_final_batch_size <= 0:
+        raise ValueError("--architecture_final_batch_size must be positive")
+    if args.architecture_final_lr_scale <= 0:
+        raise ValueError("--architecture_final_lr_scale must be positive")
+    if args.architecture_max_steps is not None and args.architecture_max_steps <= 0:
+        raise ValueError("--architecture_max_steps must be positive")
+    if args.architecture_eval_every_steps is not None and args.architecture_eval_every_steps <= 0:
+        raise ValueError("--architecture_eval_every_steps must be positive")
+    if args.architecture_fine_max_steps is not None and args.architecture_fine_max_steps <= 0:
+        raise ValueError("--architecture_fine_max_steps must be positive")
+    if args.architecture_fine_eval_every_steps is not None and args.architecture_fine_eval_every_steps <= 0:
+        raise ValueError("--architecture_fine_eval_every_steps must be positive")
+    if args.resolve_split_iteration is not None and args.resolve_split_iteration <= 0:
+        raise ValueError("--resolve_split_iteration must be positive")
+    if args.score_split_iteration is not None and args.score_split_iteration <= 0:
+        raise ValueError("--score_split_iteration must be positive")
+    if args.score_k is not None and args.score_k < 0:
+        raise ValueError("--score_k must be non-negative")
+    if args.score_k is not None:
+        min_train_muts = mutation_min_train_muts(args)
+        max_train_muts = mutation_max_train_muts(args)
+        if not (min_train_muts <= int(args.score_k) <= max_train_muts):
+            raise ValueError(
+                "--score_k must be between min_train_muts and max_train_muts "
+                f"({min_train_muts}..{max_train_muts})"
+            )
 
 
 def main():
@@ -1829,6 +2753,7 @@ def main():
     print(f"[main] dataset={dataset_path}")
     print(f"[main] cache={label_root}")
     print(f"[main] task_type={label_spec.task_type} n_rows={len(df)}")
+    print(f"[main] training device: {device_debug_string(resolve_device(args.device))}", flush=True)
     if args.hard_refresh:
         hard_refresh_label_cache(label_root, cache_path)
 
@@ -1849,7 +2774,14 @@ def main():
     for feature_kind, embedding_name in feature_specs:
         feature_store = FeatureStore(df, dataset_path, args, feature_kind, embedding_name)
         print(f"[main] running feature={feature_store.model_name}")
-        if args.train_type == "mutation":
+        if args.resolve_architecture_only:
+            print(
+                "[main] resolve_architecture_only=True; "
+                f"mode={args.architecture_resolution} feature={feature_store.model_name}",
+                flush=True,
+            )
+            resolve_architecture_only(feature_store, label_spec.y, label_spec, label_root, args)
+        elif args.train_type == "mutation":
             run_mutation_training(df, feature_store, label_spec.y, label_spec, label_root, args)
         else:
             run_random_training(df, feature_store, label_spec.y, label_spec, label_root, args)

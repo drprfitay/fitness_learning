@@ -47,15 +47,17 @@ def esmdecode(seq, tokenizer_dict):
     return "".join([reverse_dict[x] for x in seq])
 
 datasets = {
-    #"lov": "./data/lov/lov.csv",
-    #"pard3": "./data/pard3/pard3.csv",
-    #"gcn4": "./data/gcn4/gcn4.csv",
-    #"nmt": "./data/nmt/nmt_full_seq.csv",
-    #"gfp" : "./data/gfp/gfp_dataset_10mut.csv",
-    #"pte": "./data/pte/pte.csv" 
+    # "lov": "./data/lov/lov.csv",
+    # "pard3": "./data/pard3/pard3.csv",
+    # "gcn4": "./data/gcn4/gcn4.csv",
+    # "nmt": "./data/nmt/nmt_full_seq.csv",
+    #"gfp": "./data/gfp/gfp_dataset_10mut.csv",
+    #"pte": "./data/pte/pte.csv",
     #"aamyl": "./data/aamyl/aamyl.csv",
     #"his": "./data/his/his.csv",
-    "casp": "./data/casp/casp.csv"
+    "his2": "./data/his2/his2.csv",
+    "his5": "./data/his5/his5.csv",
+    #"casp": "./data/casp/casp.csv"
 }
 
 

@@ -38,7 +38,8 @@ def get_num_muts_column_name(dataset):
         "pte": "num_muts",
         "gcn4": "num_muts",
         "nmt": "num_muts",
-        "his": "num_muts",
+        "his2": "num_muts",
+        "his5": "num_muts",
         "aamyl": "num_muts",
         "casp": "num_muts"
     }[dataset]
