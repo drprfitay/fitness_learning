@@ -189,7 +189,10 @@ def hamming_distance_matrix(x_ohe: np.ndarray, wt_ohe: np.ndarray) -> np.ndarray
 
 def default_output_path(args, csv_path: Path | None) -> Path:
     if args.output_path:
-        return Path(args.output_path).expanduser()
+        output_path = Path(args.output_path).expanduser()
+        if output_path.suffix.lower() != ".npy":
+            return output_path / "hamming_distance.npy"
+        return output_path
     if csv_path is None:
         raise ValueError("provide --output_path when no dataset path is available")
     return csv_path.parent / "hamming_distance.npy"
@@ -197,7 +200,14 @@ def default_output_path(args, csv_path: Path | None) -> Path:
 
 def default_figure_path(args, csv_path: Path | None) -> Path:
     if args.figure_path:
-        return Path(args.figure_path).expanduser()
+        figure_path = Path(args.figure_path).expanduser()
+        if figure_path.suffix.lower() not in {".png", ".svg"}:
+            return figure_path / f"hamming_mds.{args.figure_format}"
+        return figure_path
+    if args.output_path:
+        output_path = Path(args.output_path).expanduser()
+        if output_path.suffix.lower() != ".npy":
+            return output_path / f"hamming_mds.{args.figure_format}"
     if csv_path is None:
         raise ValueError("provide --figure_path when no dataset path is available")
     return csv_path.parent / f"hamming_mds.{args.figure_format}"
