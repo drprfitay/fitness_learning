@@ -15,6 +15,7 @@ Created on Tue Jun 24 13:26:20 2025
 
 
 import sys, os
+import json
 import torch
 import torch.nn.functional as F
 
@@ -31,6 +32,104 @@ global is_init
 
 is_init = False
 internal_wrapper = {"load_model": None}
+
+
+def _resolve_lora_paths(lora_weights_path, lora_config_path=None):
+    if lora_weights_path is None:
+        return None, None
+
+    lora_weights_path = os.path.abspath(str(lora_weights_path))
+    if os.path.isdir(lora_weights_path):
+        lora_config_path = lora_config_path or os.path.join(lora_weights_path, "training_config.json")
+        candidate_weights = [
+            os.path.join(lora_weights_path, "lora_weights.pt"),
+            os.path.join(lora_weights_path, "final_model.pt"),
+        ]
+        for candidate in candidate_weights:
+            if os.path.exists(candidate):
+                return candidate, lora_config_path
+        raise FileNotFoundError("could not find lora_weights.pt or final_model.pt under %s" % lora_weights_path)
+
+    if lora_config_path is None:
+        root, _ext = os.path.splitext(lora_weights_path)
+        candidate = root + ".config.json"
+        if os.path.exists(candidate):
+            lora_config_path = candidate
+
+    return lora_weights_path, lora_config_path
+
+
+def _replace_linear_with_lora(module, r=8, alpha=16, dropout=0.0):
+    try:
+        import loralib as lora
+    except ImportError as exc:
+        raise ImportError("loralib is required to load LoRA weights") from exc
+
+    for name, child in list(module.named_children()):
+        if isinstance(child, torch.nn.Linear):
+            replacement = lora.Linear(
+                child.in_features,
+                child.out_features,
+                r=r,
+                lora_alpha=alpha,
+                lora_dropout=dropout,
+                bias=child.bias is not None,
+            ).to(device=child.weight.device, dtype=child.weight.dtype)
+            replacement.weight.data.copy_(child.weight.data)
+            if child.bias is not None:
+                replacement.bias.data.copy_(child.bias.data)
+            replacement.train(child.training)
+            setattr(module, name, replacement)
+        else:
+            _replace_linear_with_lora(child, r=r, alpha=alpha, dropout=dropout)
+
+
+def apply_lora_weights_to_model(model,
+                                lora_weights_path,
+                                lora_config_path=None,
+                                lora_r=None,
+                                lora_alpha=None,
+                                lora_dropout=None,
+                                strict=False,
+                                verbose=True):
+    lora_weights_path, lora_config_path = _resolve_lora_paths(lora_weights_path, lora_config_path)
+    if lora_weights_path is None:
+        return model
+    if not os.path.exists(lora_weights_path):
+        raise FileNotFoundError("LoRA weights file does not exist: %s" % lora_weights_path)
+
+    config = {}
+    if lora_config_path is not None and os.path.exists(lora_config_path):
+        with open(lora_config_path) as handle:
+            config = json.load(handle)
+
+    lora_r = int(lora_r if lora_r is not None else config.get("lora_r", 8))
+    lora_alpha = int(lora_alpha if lora_alpha is not None else config.get("lora_alpha", 16))
+    lora_dropout = float(lora_dropout if lora_dropout is not None else config.get("lora_dropout", 0.0))
+
+    if verbose:
+        print("[plm_base] applying LoRA: path=%s r=%d alpha=%d dropout=%.4g" %
+              (lora_weights_path, lora_r, lora_alpha, lora_dropout))
+
+    _replace_linear_with_lora(model, r=lora_r, alpha=lora_alpha, dropout=lora_dropout)
+
+    state = torch.load(lora_weights_path, map_location="cpu")
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    incompatible = model.load_state_dict(state, strict=False)
+
+    loaded_lora_keys = sum(1 for key in state.keys() if "lora_" in key)
+    unexpected_lora = [key for key in incompatible.unexpected_keys if "lora_" in key]
+    if loaded_lora_keys == 0:
+        raise ValueError("weights file does not contain LoRA tensors: %s" % lora_weights_path)
+    if unexpected_lora or (strict and incompatible.unexpected_keys):
+        raise RuntimeError("failed to load LoRA weights cleanly from %s" % lora_weights_path)
+
+    if verbose:
+        print("[plm_base] loaded LoRA tensors=%d missing=%d unexpected=%d" %
+              (loaded_lora_keys, len(incompatible.missing_keys), len(incompatible.unexpected_keys)))
+
+    return model
 
 class PlmWrapper():
     def unimplemented(self):
@@ -75,6 +174,10 @@ class PlmWrapper():
     
     def get_forward(self):
         return self.forward_func
+
+    def load_lora_weights(self, *args, **kwargs):
+        apply_lora_weights_to_model(self.get_model(), *args, **kwargs)
+        return self
 
 
 def plm_init(PLM_BASE_PATH):
@@ -453,11 +556,31 @@ def plm_init(PLM_BASE_PATH):
         
     internal_wrapper["load_model"] = load_model_internal
         
-def load_model(model_name): 
+def load_model(model_name,
+               lora_weights_path=None,
+               lora_config_path=None,
+               lora_r=None,
+               lora_alpha=None,
+               lora_dropout=None,
+               lora_strict=False,
+               lora_verbose=True): 
     if not is_init:
         raise BaseException("Please init PLM base first")
-        
-    return internal_wrapper["load_model"](model_name)
+
+    plm_obj = internal_wrapper["load_model"](model_name)
+    if lora_weights_path is not None:
+        apply_lora_weights_to_model(
+            plm_obj.get_model(),
+            lora_weights_path=lora_weights_path,
+            lora_config_path=lora_config_path,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            strict=lora_strict,
+            verbose=lora_verbose,
+        )
+
+    return plm_obj
       
 # This is kinda deprecated at this point, better using plmEmbeddingModel instead
 class plmTrunkModel(torch.nn.Module):    
@@ -477,7 +600,14 @@ class plmTrunkModel(torch.nn.Module):
                  stride=5,
                  trunk_classes=2,
                  device=torch.device("cpu"),                 
-                 dtype=torch.double):
+                 dtype=torch.double,
+                 lora_weights_path=None,
+                 lora_config_path=None,
+                 lora_r=None,
+                 lora_alpha=None,
+                 lora_dropout=None,
+                 lora_strict=False,
+                 lora_verbose=True):
         super().__init__()
         
         
@@ -485,7 +615,16 @@ class plmTrunkModel(torch.nn.Module):
         # #plm, plm_tokenizer = load_esm2_model_and_alphabet(plm_name)
         # V, plm_d_model = plm.embed_tokens.weight.size()
         
-        plm_obj = load_model(plm_name)
+        plm_obj = load_model(
+            plm_name,
+            lora_weights_path=lora_weights_path,
+            lora_config_path=lora_config_path,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_strict=lora_strict,
+            lora_verbose=lora_verbose,
+        )
         plm = plm_obj.get_model()
         plm_tokenizer = plm_obj.get_tokenizer()
         vocab, plm_d_model = plm_obj.get_token_vocab_dim()
@@ -602,9 +741,25 @@ class plmEmbeddingModel(torch.nn.Module):
                  logits_only=False,
                  tok_dropout=True,
                  device=torch.device("cpu"),                 
-                 dtype=torch.double):
+                 dtype=torch.double,
+                 lora_weights_path=None,
+                 lora_config_path=None,
+                 lora_r=None,
+                 lora_alpha=None,
+                 lora_dropout=None,
+                 lora_strict=False,
+                 lora_verbose=True):
         super().__init__()
-        plm_obj = load_model(plm_name)
+        plm_obj = load_model(
+            plm_name,
+            lora_weights_path=lora_weights_path,
+            lora_config_path=lora_config_path,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_strict=lora_strict,
+            lora_verbose=lora_verbose,
+        )
         plm = plm_obj.get_model()
         plm_tokenizer = plm_obj.get_tokenizer()
         vocab, plm_d_model = plm_obj.get_token_vocab_dim()

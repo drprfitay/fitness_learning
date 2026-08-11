@@ -20,6 +20,94 @@ def generate_random_hash(length=32):
     return ''.join(random.choice(chars) for _ in range(length))
 
 
+def _read_text_or_file(value=None, file_path=None):
+    if value is not None:
+        return value.strip()
+    if file_path is not None:
+        with open(file_path) as handle:
+            return "".join(line.strip() for line in handle if line.strip() and not line.startswith(">"))
+    return None
+
+
+def get_embedding_identifier(args):
+    return getattr(args, "embedding_identifier", None) or getattr(args, "model")
+
+
+def infer_wt_sequence(args, df):
+    wt_sequence = _read_text_or_file(
+        getattr(args, "saprot_wt_sequence", None),
+        getattr(args, "saprot_wt_sequence_file", None),
+    )
+    if wt_sequence is not None:
+        return wt_sequence
+
+    sequence_colname = getattr(args, "sequence_colname", "full_sequence")
+    num_muts_colname = getattr(args, "num_muts_colname", "num_muts")
+    if num_muts_colname in df.columns and (df[num_muts_colname] == 0).any():
+        return df.loc[df[num_muts_colname] == 0, sequence_colname].iloc[0]
+
+    print("[WARNING] No SaProt WT sequence was provided and no num_muts==0 row was found; using the first sequence.")
+    return df[sequence_colname].iloc[0]
+
+
+def build_embedding_model(args, df=None):
+    base_model = getattr(args, "base_model", None) or getattr(args, "model")
+    lora_weights_path = getattr(args, "lora_weights_path", None)
+
+    model_kwargs = {
+        "lora_weights_path": lora_weights_path,
+        "lora_config_path": getattr(args, "lora_config_path", None),
+        "lora_r": getattr(args, "lora_r", None),
+        "lora_alpha": getattr(args, "lora_alpha", None),
+        "lora_dropout": getattr(args, "lora_dropout", None),
+        "lora_strict": getattr(args, "lora_strict", False),
+        "lora_verbose": getattr(args, "lora_verbose", True),
+    }
+
+    use_saprot_structure = any(
+        getattr(args, name, None) is not None
+        for name in [
+            "saprot_pdb_sequence",
+            "saprot_pdb_sequence_file",
+            "saprot_token_sequence",
+            "saprot_token_sequence_file",
+        ]
+    )
+
+    if use_saprot_structure:
+        if df is None:
+            df = __validate_dataset(args)
+
+        pdb_sequence = _read_text_or_file(
+            getattr(args, "saprot_pdb_sequence", None),
+            getattr(args, "saprot_pdb_sequence_file", None),
+        )
+        foldseek_tokens = _read_text_or_file(
+            getattr(args, "saprot_token_sequence", None),
+            getattr(args, "saprot_token_sequence_file", None),
+        )
+        if pdb_sequence is None or foldseek_tokens is None:
+            raise ValueError("SaProt embedding requires --saprot_pdb_sequence and --saprot_token_sequence, or their *_file forms.")
+
+        wt_sequence = infer_wt_sequence(args, df)
+        print("[INFO] Building StructurePlmEmbedding")
+        print(f"[INFO] base_model={base_model} embedding_identifier={get_embedding_identifier(args)}")
+        print(f"[INFO] WT length={len(wt_sequence)} PDB length={len(pdb_sequence)} token length={len(foldseek_tokens)}")
+
+        return StructurePlmEmbedding(
+            plm_name=base_model,
+            wt_sequence=wt_sequence,
+            pdb_sequence=pdb_sequence,
+            foldseek_tokens=foldseek_tokens,
+            **model_kwargs,
+        )
+
+    print(f"[INFO] Building plmEmbeddingModel base_model={base_model} embedding_identifier={get_embedding_identifier(args)}")
+    if lora_weights_path is not None:
+        print(f"[INFO] Loading LoRA weights from {lora_weights_path}")
+    return plmEmbeddingModel(plm_name=base_model, **model_kwargs)
+
+
 def ab_run_dataset(model, dataset_path, indices=None, heavy_or_light_only=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     print(f"\t\t[INFO] Using device: {device}")
@@ -168,7 +256,7 @@ def run_actual_job(job_file_path, job_key_dataset, model, evaluations_dir, embed
 
                 run_dataset(
                     model,
-                    job_args.model,
+                    get_embedding_identifier(job_args),
                     dataset_path,
                     evaluations_dir,
                     job_args.sequence_colname,
@@ -212,7 +300,7 @@ def worker(args):
         job_args_dict = json.load(f)
 
     job_args = argparse.Namespace(**job_args_dict)
-    _ = __validate_dataset(job_args)
+    df = __validate_dataset(job_args)
 
     key_dataset_path = os.path.join(args.jobs_path, "key_dataset.csv")
 
@@ -225,7 +313,7 @@ def worker(args):
         if not hasattr(job_args, required_arg) or getattr(job_args, required_arg) is None:
             raise ValueError(f"Job argument '{required_arg}' must be provided in job_args.json.")
 
-    model = plmEmbeddingModel(plm_name=job_args.model)
+    model = build_embedding_model(job_args, df)
     evaluation_path = job_args.evaluation_path
     evaluations_dir = os.path.join(evaluation_path, "evaluations")
     os.makedirs(evaluations_dir, exist_ok=True)
@@ -287,7 +375,7 @@ def specific_job(args):
         job_args_dict = json.load(f)
 
     job_args = argparse.Namespace(**job_args_dict)
-    _ = __validate_dataset(job_args)
+    df = __validate_dataset(job_args)
 
     key_dataset_path = os.path.join(args.jobs_path, "key_dataset.csv")
 
@@ -300,7 +388,7 @@ def specific_job(args):
         if not hasattr(job_args, required_arg) or getattr(job_args, required_arg) is None:
             raise ValueError(f"Job argument '{required_arg}' must be provided in job_args.json.")
 
-    model = plmEmbeddingModel(plm_name=job_args.model)
+    model = build_embedding_model(job_args, df)
     evaluation_path = job_args.evaluation_path
     evaluations_dir = os.path.join(evaluation_path, "evaluations")
     os.makedirs(evaluations_dir, exist_ok=True)
@@ -387,11 +475,12 @@ def embed_parallel(args):
 
     print(f"[INFO] Using evaluation_path: {eval_path}")
 
-    model = plmEmbeddingModel(plm_name=args.model)
+    model = build_embedding_model(args, df)
+    embedding_identifier = get_embedding_identifier(args)
     
     # Just to cache
     train_test_dataset = PREActivityDataset(
-        encoding_identifier=args.model,
+        encoding_identifier=embedding_identifier,
         evaluation_path=eval_path,
         dataset_path=args.dataset_file,
         train_indices=None,
@@ -623,6 +712,22 @@ def main():
     parser.add_argument('--print_done_jobs', action='store_true', default=False)
     parser.add_argument('--execute_after_parallel_generation', action='store_true', default=False)
     parser.add_argument('--model', type=str, default="esm2_t12_35M_UR50D")
+    parser.add_argument('--base_model', type=str, default=None, help="Actual PLM to load when --model is a user-facing alias such as esm35m_lora.")
+    parser.add_argument('--embedding_identifier', type=str, default=None, help="Cache/result identifier. Defaults to --model.")
+    parser.add_argument('--lora_weights_path', type=str, default=None, help="LoRA weights file or output directory from new_trainer.py.")
+    parser.add_argument('--lora_config_path', type=str, default=None)
+    parser.add_argument('--lora_r', type=int, default=None)
+    parser.add_argument('--lora_alpha', type=int, default=None)
+    parser.add_argument('--lora_dropout', type=float, default=None)
+    parser.add_argument('--lora_strict', action='store_true', default=False)
+    parser.add_argument('--no_lora_verbose', dest='lora_verbose', action='store_false', default=True)
+    parser.add_argument('--saprot_wt_sequence', type=str, default=None)
+    parser.add_argument('--saprot_wt_sequence_file', type=str, default=None)
+    parser.add_argument('--saprot_pdb_sequence', type=str, default=None)
+    parser.add_argument('--saprot_pdb_sequence_file', type=str, default=None)
+    parser.add_argument('--saprot_token_sequence', type=str, default=None)
+    parser.add_argument('--saprot_token_sequence_file', type=str, default=None)
+    parser.add_argument('--num_muts_colname', type=str, default="num_muts")
     parser.add_argument('--pretrained_weights', type=str)
     parser.add_argument('--outputfile', type=str)
     parser.add_argument('--evaluation_path', type=str, help="Path to the evaluation output or evaluation-related files.")
