@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument("--output_path", default=None, help="Output .npy path for distance matrix")
     parser.add_argument("--figure_path", default=None, help="Output figure path")
     parser.add_argument("--figure_format", choices=["png", "svg"], default="png")
+    parser.add_argument("--alpha", type=float, default=0.85, help="Point transparency for plotted variants.")
     parser.add_argument("--dpi", type=int, default=300)
     return parser.parse_args()
 
@@ -195,7 +196,7 @@ def default_output_path(args, csv_path: Path | None) -> Path:
         return output_path
     if csv_path is None:
         raise ValueError("provide --output_path when no dataset path is available")
-    return csv_path.parent / "hamming_distance.npy"
+    return csv_path.parent / "mds" / "hamming_distance.npy"
 
 
 def default_figure_path(args, csv_path: Path | None) -> Path:
@@ -210,7 +211,7 @@ def default_figure_path(args, csv_path: Path | None) -> Path:
             return output_path / f"hamming_mds.{args.figure_format}"
     if csv_path is None:
         raise ValueError("provide --figure_path when no dataset path is available")
-    return csv_path.parent / f"hamming_mds.{args.figure_format}"
+    return csv_path.parent / "mds" / f"hamming_mds.{args.figure_format}"
 
 
 def save_matrix(distance_matrix: np.ndarray, selected_indices: np.ndarray, args, csv_path: Path | None) -> None:
@@ -248,7 +249,7 @@ def save_figure(distance_matrix: np.ndarray, args, csv_path: Path | None) -> Non
     figure_path.parent.mkdir(parents=True, exist_ok=True)
 
     plt.figure(figsize=(5, 5))
-    sc = plt.scatter(coords[1:, 0], coords[1:, 1], c=hamming_from_wt, s=25, alpha=0.85)
+    sc = plt.scatter(coords[1:, 0], coords[1:, 1], c=hamming_from_wt, s=25, alpha=args.alpha)
     plt.scatter(coords[0, 0], coords[0, 1], s=160, marker="*", edgecolor="black", linewidth=1.2, label="WT")
     plt.colorbar(sc, label="Hamming distance from WT")
     plt.xlabel("Sequence space (MDS 1)")
@@ -263,6 +264,8 @@ def save_figure(distance_matrix: np.ndarray, args, csv_path: Path | None) -> Non
 
 def main():
     args = parse_args()
+    if args.alpha < 0 or args.alpha > 1:
+        raise ValueError("--alpha must be between 0 and 1")
     if args.onehot_path:
         x_ohe, wt_ohe, selected_indices, csv_path = build_external_onehot(args)
     else:
