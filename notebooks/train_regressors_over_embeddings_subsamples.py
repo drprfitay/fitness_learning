@@ -116,11 +116,30 @@ def as_classifier_labels(values, threshold=None):
         threshold = float(np.nanmean(values))
     return (values > threshold).astype(int)
 
-def evaluate_regression(preds, y_true):
-    cor = spearmanr(preds, y_true)
-    return {"correlation": cor.correlation, "p_value": cor.pvalue}
+def precision_at_k(scores, y_true, k=100):
+    scores = np.asarray(scores).reshape(-1)
+    y_true = np.asarray(y_true).reshape(-1)
+    if len(y_true) == 0:
+        return np.nan
+    k = min(int(k), len(y_true))
+    if k <= 0:
+        return np.nan
+    pred_top = np.argsort(-scores)[:k]
+    unique = np.unique(y_true[~pd.isna(y_true)])
+    if len(unique) <= 2 and set(unique.tolist()).issubset({0, 1, 0.0, 1.0}):
+        return float(np.mean(y_true[pred_top] == 1))
+    true_top = np.argsort(-y_true)[:k]
+    return float(len(np.intersect1d(pred_top, true_top)) / k)
 
-def evaluate_classification(proba_or_score, y_pred, y_true):
+def evaluate_regression(preds, y_true, precision_k=100):
+    cor = spearmanr(preds, y_true)
+    return {
+        "correlation": cor.correlation,
+        "p_value": cor.pvalue,
+        "precision_at_k": precision_at_k(preds, y_true, k=precision_k),
+    }
+
+def evaluate_classification(proba_or_score, y_pred, y_true, precision_k=100):
     y_true = np.asarray(y_true).astype(int)
     y_pred = np.asarray(y_pred).astype(int)
     proba_or_score = np.asarray(proba_or_score)
@@ -132,6 +151,7 @@ def evaluate_classification(proba_or_score, y_pred, y_true):
         "roc_auc": roc_auc,
         "accuracy": accuracy_score(y_true, y_pred),
         "precision": precision_score(y_true, y_pred, zero_division=0),
+        "precision_at_k": precision_at_k(proba_or_score, y_true, k=precision_k),
         "recall": recall_score(y_true, y_pred, zero_division=0),
         "f1": f1_score(y_true, y_pred, zero_division=0),
     }
@@ -182,12 +202,15 @@ def main():
     parser.add_argument('--classifier', action='store_true', default=False, help='Run classification instead of regression.')
     parser.add_argument('--regression', action='store_true', default=False, help='Explicit no-op flag; regression is the default.')
     parser.add_argument('--classification_threshold', type=float, default=None, help='Threshold for converting continuous labels to binary labels. Defaults to label mean.')
+    parser.add_argument('--precision_k', type=int, default=100, help='K for precision@K metrics.')
     parser.add_argument('--mean_embeddings', action='store_true', default=False,
                         help='If set, use mean embedding vectors (i.e., take mean on axis=1, not flatten)')
     # Add support for external labels (column from df, like in train_classifiers_over_embeddings.py)
     parser.add_argument('--external_labels_column', type=str, default=None,
                         help="If set, use this column from the dataframe as labels for all regression instead of the default activity/fitness column or embedding labels.")
     args = parser.parse_args()
+    if args.precision_k <= 0:
+        raise ValueError("--precision_k must be positive")
 
     base_path = args.base_path
     dataset = args.dataset_name
@@ -308,10 +331,12 @@ def main():
                 )
                 ohe_true = curr_labels.numpy()[test_indices]
                 if is_classifier:
-                    for metric, value in evaluate_classification(ohe_scores, ohe_preds, ohe_true).items():
+                    for metric, value in evaluate_classification(ohe_scores, ohe_preds, ohe_true, precision_k=args.precision_k).items():
                         result_dict[f"{prefix}{metric}_ohe"] = value
                 else:
-                    result_dict[f"{prefix}cor_ohe"] = evaluate_regression(ohe_preds, ohe_true)["correlation"]
+                    ohe_metrics = evaluate_regression(ohe_preds, ohe_true, precision_k=args.precision_k)
+                    result_dict[f"{prefix}cor_ohe"] = ohe_metrics["correlation"]
+                    result_dict[f"{prefix}precision_at_k_ohe"] = ohe_metrics["precision_at_k"]
 
                 for model_name, model_path in embedding_paths.items():
                     normalized_embeddings = embeddings_all[model_name]
@@ -349,10 +374,12 @@ def main():
                     result_suffix = "_mean" if args.mean_embeddings else "_flat"
                     result_key = f"{model_name}{result_suffix}"
                     if is_classifier:
-                        for metric, value in evaluate_classification(llm_scores, llm_preds, test_llm_labels).items():
+                        for metric, value in evaluate_classification(llm_scores, llm_preds, test_llm_labels, precision_k=args.precision_k).items():
                             result_dict[f"{prefix}{metric}_{result_key}"] = value
                     else:
-                        result_dict[f"{prefix}cor_{result_key}"] = evaluate_regression(llm_preds, test_llm_labels)["correlation"]
+                        llm_metrics = evaluate_regression(llm_preds, test_llm_labels, precision_k=args.precision_k)
+                        result_dict[f"{prefix}cor_{result_key}"] = llm_metrics["correlation"]
+                        result_dict[f"{prefix}precision_at_k_{result_key}"] = llm_metrics["precision_at_k"]
             all_results.append(result_dict)
             print(result_dict)
             # Save every 5th iteration in the loop, but only for the last shuffle mode in the list (to avoid duplicate saves per iter)
