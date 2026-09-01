@@ -57,7 +57,7 @@ FULL_SEQ_COLUMN_NAME = {
     "gfp": "full_seq",
     "pte": "full_seq",
     "aamyl": "full_seq",
-    "nmt": "seq",
+    "nmt": "full_seq",
     "trpb": "full_seq",
     "his": "full_seq",
     "his2": "full_seq",
