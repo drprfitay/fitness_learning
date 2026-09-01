@@ -179,6 +179,16 @@ def decode_amino_acids_from_tokens(model, model_key, token_ids):
     return model.tokenizer.decode(token_ids)
 
 
+def get_mask_token_id(model, model_key, mask_token_string):
+    if is_saprot_model(model_key):
+        mask_token_id = model.tokenizer.convert_tokens_to_ids(mask_token_string)
+        if mask_token_id is None or mask_token_id == model.tokenizer.unk_token_id:
+            raise ValueError("Could not resolve SaProt mask token %r" % mask_token_string)
+        return mask_token_id
+
+    return model.encode(mask_token_string)[1]
+
+
 def load_existing_result_columns(path, expected_rows, resume_missing_models):
     if not resume_missing_models or not os.path.exists(path):
         return [], set()
@@ -813,7 +823,11 @@ for dataset_to_use in datasets.keys():
             % mask_token_string
         )
 
-        mask_token = model.encode(mask_token_string)[1]
+        mask_token = get_mask_token_id(
+            model,
+            k,
+            mask_token_string,
+        )
 
         print(
             "[INFO] Mask token value is %s"
