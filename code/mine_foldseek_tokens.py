@@ -97,7 +97,16 @@ def resolve_dataset_csv(dataset_name, csv_path=None):
 
 def resolve_pdb_path(csv_path, pdb_path=None):
     if pdb_path is None:
-        pdb_path = os.path.splitext(csv_path)[0] + ".pdb"
+        base_path = os.path.splitext(csv_path)[0]
+        candidate_paths = [
+            base_path + ".pdb",
+            base_path + ".cif",
+            base_path + ".mmcif",
+        ]
+        for candidate_path in candidate_paths:
+            if os.path.exists(candidate_path):
+                return os.path.abspath(candidate_path)
+        pdb_path = candidate_paths[0]
     elif not os.path.isabs(pdb_path):
         pdb_path = os.path.join(NOTEBOOKS_DIR, pdb_path)
     return os.path.abspath(pdb_path)
@@ -124,6 +133,9 @@ def get_dataset_columns(dataset_name, df, sequence_col=None, num_muts_col=None):
 
 
 def read_foldseek_3di(pdb_path):
+    stdout = ""
+    stderr = ""
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tsv") as tmp:
         out_path = tmp.name
 
@@ -134,6 +146,8 @@ def read_foldseek_3di(pdb_path):
             capture_output=True,
             text=True,
         )
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
     except FileNotFoundError as exc:
         raise FileNotFoundError("foldseek executable was not found in PATH") from exc
     except subprocess.CalledProcessError as exc:
@@ -165,7 +179,13 @@ def read_foldseek_3di(pdb_path):
     if completed.returncode != 0:
         raise RuntimeError("Foldseek failed for %s" % pdb_path)
     if len(records) == 0:
-        raise ValueError("No Foldseek records found for %s" % pdb_path)
+        msg = stderr or stdout or "Foldseek wrote no records and no diagnostic output"
+        raise ValueError(
+            "No Foldseek records found for %s. "
+            "If this structure is mmCIF, pass the .cif/.mmcif path explicitly "
+            "or keep it with a .cif/.mmcif suffix. Foldseek output: %s" %
+            (pdb_path, msg[-1000:])
+        )
 
     return records
 
