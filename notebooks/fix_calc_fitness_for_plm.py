@@ -221,7 +221,7 @@ def additive_scores_from_log_probs(
         fitness[start:end] = (
             variant_log_probs
             - wt_log_probs.unsqueeze(0)
-        ).sum(dim=1).numpy()
+        ).sum(dim=1).detach().numpy()
 
     return fitness
 
@@ -365,7 +365,8 @@ for dataset_to_use in datasets.keys():
         assert masked_prompt[:,working_positions].sum().item() == mask_token * len(working_positions), "masking operation failed"
         print("[INFO] ASSERT 2/2 (masking) passed")
 
-        logits = model(masked_prompt)
+        with torch.no_grad():
+            logits = model(masked_prompt)
         pssm = logits.softmax(dim=2)
         log_probs = torch.log_softmax(logits.float(), dim=2)
         pssm = pssm.squeeze(0)
