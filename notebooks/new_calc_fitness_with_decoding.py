@@ -31,6 +31,7 @@ FORWARD_BATCH_SIZE = 60
 VARIANT_SCORE_BATCH_SIZE = 2000
 USE_MIXED_PRECISION = True
 VERBOSE_SCORING = True
+RESUME_MISSING_MODELS = False
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
@@ -54,6 +55,25 @@ full_model_names = {
     "progen2-small": "progen2-small"
 }
 
+USE_SAPROT = False
+
+SAPROT_MODEL_NAMES = {
+    "saprot": "saprot",
+    # "saprot_35m_af2": "saprot_35m_af2",
+    # "saprot_650m_af2": "saprot_650m_af2",
+    # "saprot_650m_pdb": "saprot_650m_pdb",
+}
+
+SAPROT_CACHE_IDENTIFIER = {
+    "saprot": "saprot_%s",
+    # "saprot_35m_af2": "saprot_35m_af2_%s",
+    # "saprot_650m_af2": "saprot_650m_af2_%s",
+    # "saprot_650m_pdb": "saprot_650m_pdb_%s",
+}
+
+if USE_SAPROT:
+    full_model_names.update(SAPROT_MODEL_NAMES)
+
 mask_tokens = {
     "esm_8m": "<mask>",
     "esm_35m": "<mask>",
@@ -61,7 +81,11 @@ mask_tokens = {
     "esm_650m": "<mask>",
     "esm_3b": "<mask>",
     "progen2-medium": "<|pad|>",
-    "progen2-small": "<|pad|>"
+    "progen2-small": "<|pad|>",
+    "saprot": "<mask>",
+    "saprot_35m_af2": "<mask>",
+    "saprot_650m_af2": "<mask>",
+    "saprot_650m_pdb": "<mask>",
 }
 
 tokenized_sequences_path_dict = dict([
@@ -73,6 +97,104 @@ tokenized_sequences_path_dict = dict([
 def esmdecode(seq, tokenizer_dict):
     reverse_dict = dict((v, k) for (k, v) in tokenizer_dict.items())
     return "".join([reverse_dict[x] for x in seq])
+
+
+def read_sequence_file(path):
+    with open(path) as handle:
+        return "".join(
+            line.strip()
+            for line in handle
+            if line.strip() and not line.startswith(">")
+        )
+
+
+def is_saprot_model(model_key):
+    return model_key in SAPROT_MODEL_NAMES
+
+
+def get_tokenized_sequences_filename(model_key, dataset_to_use, dataset_cache_path):
+    if not is_saprot_model(model_key):
+        return tokenized_sequences_path_dict[model_key]
+
+    cache_identifier = SAPROT_CACHE_IDENTIFIER.get(
+        model_key,
+        "%s_%%s" % model_key,
+    ) % dataset_to_use
+
+    candidates = [
+        "%s_encoded_sequences.pt" % cache_identifier,
+        "%s_encoded_sequences.pt" % full_model_names[model_key],
+        tokenized_sequences_path_dict[model_key],
+    ]
+
+    for candidate in candidates:
+        if os.path.exists(os.path.join(dataset_cache_path, candidate)):
+            return candidate
+
+    raise FileNotFoundError(
+        "Could not find SaProt cached tokens in %s. Tried: %s" %
+        (dataset_cache_path, ", ".join(candidates))
+    )
+
+
+def build_scoring_model(model_key, dataset_to_use, wt_seq):
+    if not is_saprot_model(model_key):
+        return plmEmbeddingModel(
+            plm_name=full_model_names[model_key],
+            logits_only=True,
+            emb_only=False,
+        )
+
+    pdb_sequence_file = "./data/%s/%s_pdb_sequence.txt" % (
+        dataset_to_use,
+        dataset_to_use,
+    )
+    token_sequence_file = "./data/%s/%s_foldseek_3di.txt" % (
+        dataset_to_use,
+        dataset_to_use,
+    )
+
+    return StructurePlmEmbedding(
+        plm_name=full_model_names[model_key],
+        wt_sequence=wt_seq,
+        pdb_sequence=read_sequence_file(pdb_sequence_file),
+        foldseek_tokens=read_sequence_file(token_sequence_file),
+        logits_only=True,
+        emb_only=False,
+    )
+
+
+def decode_amino_acids_from_tokens(model, model_key, token_ids):
+    if model_key.startswith("esm"):
+        return esmdecode(token_ids, model.tokenizer.to_dict())
+
+    if is_saprot_model(model_key):
+        tokens = model.tokenizer.convert_ids_to_tokens(token_ids)
+        tokens = [
+            token for token in tokens
+            if token not in model.tokenizer.all_special_tokens
+        ]
+        return "".join(token[0] for token in tokens)
+
+    return model.tokenizer.decode(token_ids)
+
+
+def load_existing_result_columns(path, expected_rows, resume_missing_models):
+    if not resume_missing_models or not os.path.exists(path):
+        return [], set()
+
+    df = pd.read_csv(path)
+    if len(df) != expected_rows:
+        raise ValueError(
+            "Existing result file %s has %d rows, expected %d" %
+            (path, len(df), expected_rows)
+        )
+
+    print(
+        "[INFO] Resuming from %s with existing columns: %s" %
+        (path, ", ".join(df.columns))
+    )
+    return [(col, df[col].to_numpy()) for col in df.columns], set(df.columns)
 
 
 def _get_model_device(model):
@@ -542,9 +664,6 @@ for dataset_to_use in datasets.keys():
     print("[INFO] Cache path is %s" % dataset_cache_path)
     print("########################################################")
 
-    normed_fitness_all = []
-    fitness_all = []
-
     N_random_sequences_to_assert = 20
 
     save_path = (
@@ -554,9 +673,50 @@ for dataset_to_use in datasets.keys():
 
     os.makedirs(save_path, exist_ok=True)
 
-    for k, v in tokenized_sequences_path_dict.items():
+    normed_fitness_path = "%s/new_normed_fitness_all.csv" % save_path
+    fitness_path = "%s/new_fitness_all.csv" % save_path
+
+    normed_fitness_all, existing_normed_columns = load_existing_result_columns(
+        normed_fitness_path,
+        len(df),
+        RESUME_MISSING_MODELS,
+    )
+    fitness_all, existing_fitness_columns = load_existing_result_columns(
+        fitness_path,
+        len(df),
+        RESUME_MISSING_MODELS,
+    )
+
+    for k in tokenized_sequences_path_dict.keys():
         print("########################################################")
         print("[INFO] Loading %s" % k)
+
+        expected_result_names = [
+            "%s_%s" % (k, scoring_mode)
+            for scoring_mode in SCORING_MODES
+        ]
+
+        missing_result_names = [
+            result_name
+            for result_name in expected_result_names
+            if (
+                result_name not in existing_normed_columns
+                or result_name not in existing_fitness_columns
+            )
+        ]
+
+        if RESUME_MISSING_MODELS and len(missing_result_names) == 0:
+            print(
+                "[INFO] Skipping %s; all requested result columns already exist"
+                % k
+            )
+            continue
+
+        v = get_tokenized_sequences_filename(
+            k,
+            dataset_to_use,
+            dataset_cache_path,
+        )
 
         tokenized_sequence = torch.load(
             os.path.join(dataset_cache_path, v),
@@ -589,10 +749,10 @@ for dataset_to_use in datasets.keys():
             % str(tokenized_sequence.shape)
         )
 
-        model = plmEmbeddingModel(
-            plm_name=full_model_names[k],
-            logits_only=True,
-            emb_only=False,
+        model = build_scoring_model(
+            k,
+            dataset_to_use,
+            wt_seq,
         ).to(device).eval()
 
         print(
@@ -622,15 +782,11 @@ for dataset_to_use in datasets.keys():
                 working_positions,
             ].tolist()
 
-            if k.startswith("esm"):
-                decoded_from_tokens = esmdecode(
-                    seq_tokens,
-                    model.tokenizer.to_dict(),
-                )
-            else:
-                decoded_from_tokens = model.tokenizer.decode(
-                    seq_tokens
-                )
+            decoded_from_tokens = decode_amino_acids_from_tokens(
+                model,
+                k,
+                seq_tokens,
+            )
 
             seq_from_df = "".join(
                 df.iloc[idx][columns].tolist()
@@ -707,6 +863,22 @@ for dataset_to_use in datasets.keys():
         print("[INFO] ASSERT 2/2 (masking) passed")
 
         for scoring_mode in SCORING_MODES:
+            result_name = "%s_%s" % (
+                k,
+                scoring_mode,
+            )
+
+            if (
+                RESUME_MISSING_MODELS
+                and result_name in existing_normed_columns
+                and result_name in existing_fitness_columns
+            ):
+                print(
+                    "[INFO] Skipping %s; result column already exists"
+                    % result_name
+                )
+                continue
+
             print("########################################################")
             print(
                 "[INFO] Scoring %s using %s"
@@ -801,11 +973,6 @@ for dataset_to_use in datasets.keys():
                 / normalization_denominator
             )
 
-            result_name = "%s_%s" % (
-                k,
-                scoring_mode,
-            )
-
             normed_fitness_all.append(
                 (result_name, normed_fitness)
             )
@@ -840,13 +1007,13 @@ for dataset_to_use in datasets.keys():
     pd.DataFrame(
         dict(normed_fitness_all)
     ).to_csv(
-        "%s/new_normed_fitness_all.csv" % save_path,
+        normed_fitness_path,
         index=False,
     )
 
     pd.DataFrame(
         dict(fitness_all)
     ).to_csv(
-        "%s/new_fitness_all.csv" % save_path,
+        fitness_path,
         index=False,
     )
