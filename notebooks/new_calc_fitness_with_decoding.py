@@ -32,6 +32,7 @@ VARIANT_SCORE_BATCH_SIZE = 2000
 USE_MIXED_PRECISION = True
 VERBOSE_SCORING = True
 RESUME_MISSING_MODELS = False
+RESULT_NAME_INCLUDES_SCORING_MODE = True
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
@@ -205,6 +206,18 @@ def load_existing_result_columns(path, expected_rows, resume_missing_models):
         (path, ", ".join(df.columns))
     )
     return [(col, df[col].to_numpy()) for col in df.columns], set(df.columns)
+
+
+def get_result_name(model_key, scoring_mode):
+    if RESULT_NAME_INCLUDES_SCORING_MODE:
+        return "%s_%s" % (model_key, scoring_mode)
+
+    if len(SCORING_MODES) != 1:
+        raise ValueError(
+            "RESULT_NAME_INCLUDES_SCORING_MODE=False requires exactly one scoring mode"
+        )
+
+    return model_key
 
 
 def _get_model_device(model):
@@ -702,7 +715,7 @@ for dataset_to_use in datasets.keys():
         print("[INFO] Loading %s" % k)
 
         expected_result_names = [
-            "%s_%s" % (k, scoring_mode)
+            get_result_name(k, scoring_mode)
             for scoring_mode in SCORING_MODES
         ]
 
@@ -877,10 +890,7 @@ for dataset_to_use in datasets.keys():
         print("[INFO] ASSERT 2/2 (masking) passed")
 
         for scoring_mode in SCORING_MODES:
-            result_name = "%s_%s" % (
-                k,
-                scoring_mode,
-            )
+            result_name = get_result_name(k, scoring_mode)
 
             if (
                 RESUME_MISSING_MODELS
