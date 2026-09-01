@@ -33,10 +33,30 @@ hidden_dim_size = [args.hidden_dim_size]
 for intermediate_result_path, final_save_path, hs in zip(intermediate_result_paths, final_save_path, hidden_dim_size):
 
     os.makedirs(final_save_path, exist_ok=True)
+
+    nested_evaluations_path = os.path.join(intermediate_result_path, "evaluations")
+    if os.path.isdir(nested_evaluations_path):
+        chunk_dirs = [
+            f.name for f in os.scandir(nested_evaluations_path)
+            if f.is_dir() and os.path.exists(os.path.join(f.path, "train", "embeddings.pt"))
+        ]
+        if len(chunk_dirs) > 0:
+            print("Using nested evaluations path: %s" % nested_evaluations_path)
+            intermediate_result_path = nested_evaluations_path
     
     print("Processing %s and saving to %s" % (intermediate_result_path, final_save_path))
 
-    subfolders = [f.name for f in os.scandir(intermediate_result_path) if f.is_dir()]
+    subfolders = [
+        f.name for f in os.scandir(intermediate_result_path)
+        if f.is_dir() and os.path.exists(os.path.join(f.path, "train", "embeddings.pt"))
+    ]
+
+    if len(subfolders) == 0:
+        raise FileNotFoundError(
+            "No completed embedding chunk folders found in %s. "
+            "Expected folders like 0_500/train/embeddings.pt" %
+            intermediate_result_path
+        )
 
     #embedding_all = torch.zeros([df.shape[0], 22, hs], dtype=torch.float)
     embedding_all = None
