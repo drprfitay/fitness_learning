@@ -32,6 +32,7 @@ PDB_PATH = None
 OUTPUT_PATH = None
 SAVE_OUTPUT = True
 PRINT_TOKENS = False
+SAVE_TEXT_FILES = True
 
 
 DATASET_PATHS = {
@@ -262,6 +263,7 @@ def make_foldseek_tokens_for_dataset(
     pdb_path=None,
     output_path=None,
     save_output=True,
+    save_text_files=True,
     print_tokens=False,
     sequence_col=None,
     num_muts_col=None,
@@ -333,9 +335,22 @@ def make_foldseek_tokens_for_dataset(
     elif not os.path.isabs(output_path):
         output_path = os.path.join(NOTEBOOKS_DIR, output_path)
 
+    output_dir = os.path.dirname(output_path)
+    pdb_sequence_txt_path = os.path.join(output_dir, "%s_pdb_sequence.txt" % dataset_name)
+    foldseek_token_sequence_txt_path = os.path.join(output_dir, "%s_foldseek_3di.txt" % dataset_name)
+
+    out["pdb_sequence_txt_path"] = pdb_sequence_txt_path
+    out["foldseek_token_sequence_txt_path"] = foldseek_token_sequence_txt_path
+
     if save_output:
         with open(output_path, "wb") as handle:
             pickle.dump(out, handle)
+
+    if save_text_files:
+        with open(pdb_sequence_txt_path, "w") as handle:
+            handle.write(best["aa_seq"])
+        with open(foldseek_token_sequence_txt_path, "w") as handle:
+            handle.write(best["foldseek_3di"])
 
     print("[OK] %s" % dataset_name)
     print("  csv:      %s" % csv_path)
@@ -345,6 +360,9 @@ def make_foldseek_tokens_for_dataset(
     print("  coverage: %.3f" % best["coverage_to_wt"])
     if save_output:
         print("  wrote:    %s" % output_path)
+    if save_text_files:
+        print("  wrote:    %s" % pdb_sequence_txt_path)
+        print("  wrote:    %s" % foldseek_token_sequence_txt_path)
 
     if print_tokens:
         print("\n[pdb_sequence]")
@@ -382,5 +400,6 @@ if __name__ == "__main__":
         pdb_path=pdb_path,
         output_path=OUTPUT_PATH,
         save_output=SAVE_OUTPUT,
+        save_text_files=SAVE_TEXT_FILES,
         print_tokens=PRINT_TOKENS,
     )
