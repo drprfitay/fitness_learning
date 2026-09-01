@@ -51,14 +51,14 @@ Y_PREFIXES = (
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--embedding_dir", "--embeddings_dir", required=True)
+    parser.add_argument("--embedding_dir", "--embeddings_dir", required=True, nargs="+")
     parser.add_argument("--sequence_df_path", "--sequence_path", required=True)
     parser.add_argument("--first_col", "--first_mutation_col", required=True)
     parser.add_argument("--last_col", "--last_mutation_col", required=True)
     parser.add_argument("--activity_col", "--activity_column_name", default="activity")
     parser.add_argument("--num_muts_col", "--num_muts_colname", default="num_muts")
     parser.add_argument("--output", default=None, help="Output .pt path. Defaults to <sequence_df_dir>/features.pt")
-    parser.add_argument("--embedding_key", default=None, help="Feature key for embeddings. Defaults to the embedding directory name.")
+    parser.add_argument("--embedding_key", default=None, nargs="+", help="Feature key for embeddings. Defaults to each embedding directory name.")
     parser.add_argument("--onehot_key", default="onehot")
     parser.add_argument("--mean", dest="mean", action="store_true", help="Average sequence/position embeddings to [N, D].")
     parser.add_argument("--flat", dest="mean", action="store_false", help="Flatten embeddings to [N, ...].")
@@ -208,12 +208,19 @@ def main():
     if args.activity_col not in df.columns:
         raise KeyError(f"activity column {args.activity_col!r} was not found in {sequence_df_path}")
 
+    embedding_dirs = args.embedding_dir
+    embedding_keys = args.embedding_key
+    if embedding_keys is None:
+        embedding_keys = [Path(embedding_dir).expanduser().name for embedding_dir in embedding_dirs]
+    if len(embedding_keys) != len(embedding_dirs):
+        raise ValueError("--embedding_key must have the same number of values as --embedding_dir")
+    if len(set(embedding_keys)) != len(embedding_keys):
+        raise ValueError("--embedding_key values must be unique")
+
     mutation_cols = relevant_mutation_columns(df, args.first_col, args.last_col)
     onehot = pd.get_dummies(df[mutation_cols]).astype(np.float32).to_numpy()
-    embeddings = load_embedding_chunks(args, df)
     activity = df[args.activity_col].astype(float).to_numpy()
 
-    embedding_key = args.embedding_key or Path(args.embedding_dir).expanduser().name
     output = Path(args.output).expanduser() if args.output else sequence_df_path.parent / "features.pt"
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -222,10 +229,16 @@ def main():
     payload = {
         str(args.activity_col): torch.as_tensor(activity),
         str(args.onehot_key): torch.as_tensor(onehot),
-        str(embedding_key): torch.as_tensor(embeddings),
     }
+
+    for embedding_dir, embedding_key in zip(embedding_dirs, embedding_keys):
+        args.embedding_dir = embedding_dir
+        embeddings = load_embedding_chunks(args, df)
+        payload[str(embedding_key)] = torch.as_tensor(embeddings)
+        print(f"[collect] {embedding_key}={embeddings.shape}")
+
     torch.save(payload, output)
-    print(f"[collect] onehot={onehot.shape} embedding={embeddings.shape} activity={activity.shape}")
+    print(f"[collect] onehot={onehot.shape} activity={activity.shape}")
     print(f"[collect] wrote {output}")
 
 
