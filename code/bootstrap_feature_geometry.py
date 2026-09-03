@@ -7,10 +7,9 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import spearmanr
+from sklearn.linear_model import RidgeCV
 from sklearn.metrics import r2_score
-from sklearn.linear_model import Ridge
-from sklearn.model_selection import GridSearchCV, KFold
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 
@@ -21,11 +20,11 @@ SKIP_KEYS = {"activity"}
 
 N = 512
 K = 100
+TEST_FRAC = 0.5
 SEED = 0
-CV_FOLDS = 5
-INNER_CV_FOLDS = 5
+
 ALPHAS = np.logspace(-4, 4, 25)
-N_JOBS = -1
+RIDGE_CV_FOLDS = 5
 
 VERBOSE = True
 PRINT_EVERY = 5
@@ -55,7 +54,7 @@ def load_features(path):
     return arrays
 
 
-def geometry_spearman(ohe, feat):
+def geometry_distance_spearman(ohe, feat):
     feat_norm = feat / np.maximum(np.linalg.norm(feat, axis=1, keepdims=True), 1e-12)
     cosine_similarity_matrix = feat_norm @ feat_norm.T
 
@@ -63,17 +62,17 @@ def geometry_spearman(ohe, feat):
     hamming_dist_matrix = squareform(pdist(flat_onehot, metric="hamming"))
 
     idx = np.triu_indices_from(cosine_similarity_matrix, k=1)
-    cosine = cosine_similarity_matrix[idx]
-    hamming = hamming_dist_matrix[idx]
+    cosine_distance = 1.0 - cosine_similarity_matrix[idx]
+    hamming_distance = hamming_dist_matrix[idx]
 
-    keep = np.isfinite(cosine) & np.isfinite(hamming)
+    keep = np.isfinite(cosine_distance) & np.isfinite(hamming_distance)
     if keep.sum() < 2:
         return float("nan")
-    cosine = cosine[keep]
-    hamming = hamming[keep]
-    if np.std(cosine) == 0 or np.std(hamming) == 0:
+    cosine_distance = cosine_distance[keep]
+    hamming_distance = hamming_distance[keep]
+    if np.std(cosine_distance) == 0 or np.std(hamming_distance) == 0:
         return float("nan")
-    return float(spearmanr(cosine, hamming).correlation)
+    return float(spearmanr(cosine_distance, hamming_distance).correlation)
 
 
 def global_r2(y, y_hat):
@@ -82,55 +81,29 @@ def global_r2(y, y_hat):
     return float(1.0 - numerator / denominator) if denominator > 0 else float("nan")
 
 
-def reconstruction_r2(x, y):
-    outer_cv = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=0)
-    inner_cv = KFold(n_splits=INNER_CV_FOLDS, shuffle=True, random_state=1)
-    y_oof = np.empty_like(y, dtype=float)
-
-    for train_idx, test_idx in outer_cv.split(x):
-        model = Pipeline(
-            [
-                ("scale", StandardScaler()),
-                ("ridge", Ridge()),
-            ]
-        )
-        search = GridSearchCV(
-            model,
-            param_grid={"ridge__alpha": ALPHAS},
-            scoring="neg_mean_squared_error",
-            cv=inner_cv,
-            n_jobs=N_JOBS,
-        )
-        search.fit(x[train_idx], y[train_idx])
-        y_oof[test_idx] = search.predict(x[test_idx])
-
-    feature_r2 = r2_score(y, y_oof, multioutput="raw_values")
+def reconstruction_r2(x, y, train_idx, test_idx):
+    model = make_pipeline(
+        StandardScaler(),
+        RidgeCV(alphas=ALPHAS, cv=RIDGE_CV_FOLDS),
+    )
+    model.fit(x[train_idx], y[train_idx])
+    y_hat = model.predict(x[test_idx])
+    y_test = y[test_idx]
     return {
-        "global_r2": global_r2(y, y_oof),
-        "weighted_r2": float(r2_score(y, y_oof, multioutput="variance_weighted")),
-        "mean_feature_r2": float(np.mean(feature_r2)),
-        "median_feature_r2": float(np.median(feature_r2)),
-        "feature_r2_p0": float(np.percentile(feature_r2, 0)),
-        "feature_r2_p5": float(np.percentile(feature_r2, 5)),
-        "feature_r2_p25": float(np.percentile(feature_r2, 25)),
-        "feature_r2_p50": float(np.percentile(feature_r2, 50)),
-        "feature_r2_p75": float(np.percentile(feature_r2, 75)),
-        "feature_r2_p95": float(np.percentile(feature_r2, 95)),
-        "feature_r2_p100": float(np.percentile(feature_r2, 100)),
+        "global_r2": global_r2(y_test, y_hat),
+        "weighted_r2": float(r2_score(y_test, y_hat, multioutput="variance_weighted")),
     }
 
 
-def one_round(ohe, feat, sample):
-    ohe_sample = ohe[sample]
-    feat_sample = feat[sample]
+def one_round(ohe, feat, sample, train_idx, test_idx):
     row = {
-        "geometry_spearman": geometry_spearman(ohe_sample, feat_sample),
+        "geometry_distance_spearman": geometry_distance_spearman(ohe[sample], feat[sample]),
     }
     for prefix, x, y in (
-        ("ohe_to_feature", ohe_sample, feat_sample),
-        ("feature_to_ohe", feat_sample, ohe_sample),
+        ("ohe_to_feature", ohe, feat),
+        ("feature_to_ohe", feat, ohe),
     ):
-        for key, value in reconstruction_r2(x, y).items():
+        for key, value in reconstruction_r2(x, y, train_idx, test_idx).items():
             row[f"{prefix}_{key}"] = value
     return row
 
@@ -140,7 +113,7 @@ def summarize(values):
     values = values[np.isfinite(values)]
     if len(values) == 0:
         return float("nan"), float("nan")
-    return np.mean(values), np.std(values)
+    return float(np.mean(values)), float(np.std(values))
 
 
 def summary_rows(results):
@@ -156,13 +129,13 @@ def summary_rows(results):
 
 
 def print_summary(results):
-    header = "feature  geom_rho  ohe->feat_r2  feat->ohe_r2"
+    header = "feature  geom_dist_rho  ohe->feat_r2  feat->ohe_r2"
     print(header)
     print("-" * len(header))
     for row in summary_rows(results):
         print(
             f"{row['feature']:<8} "
-            f"{row['geometry_spearman_mean']:>7.3f}+/-{row['geometry_spearman_std']:<6.3f} "
+            f"{row['geometry_distance_spearman_mean']:>7.3f}+/-{row['geometry_distance_spearman_std']:<6.3f} "
             f"{row['ohe_to_feature_weighted_r2_mean']:>7.3f}+/-{row['ohe_to_feature_weighted_r2_std']:<6.3f} "
             f"{row['feature_to_ohe_weighted_r2_mean']:>7.3f}+/-{row['feature_to_ohe_weighted_r2_std']:<6.3f}"
         )
@@ -178,12 +151,16 @@ def save_summary(results):
 def main():
     arrays = load_features(FEATURES_PT)
     ohe = arrays[ONEHOT_KEY]
+    train_size = int(round(N * (1.0 - TEST_FRAC)))
+
     if N > len(ohe):
         raise ValueError(f"N={N} is larger than row count {len(ohe)}")
     if N < 3:
         raise ValueError("N must be at least 3")
-    if N < CV_FOLDS or N - int(np.ceil(N / CV_FOLDS)) < INNER_CV_FOLDS:
-        raise ValueError("N is too small for CV_FOLDS and INNER_CV_FOLDS")
+    if train_size == 0 or train_size == N:
+        raise ValueError("TEST_FRAC leaves an empty train or test split")
+    if train_size < RIDGE_CV_FOLDS:
+        raise ValueError("train split is smaller than RIDGE_CV_FOLDS")
 
     rng = np.random.default_rng(SEED)
     feature_keys = [k for k in arrays if k != ONEHOT_KEY]
@@ -193,9 +170,12 @@ def main():
 
     for i in range(1, K + 1):
         sample = rng.choice(len(ohe), size=N, replace=False)
+        rng.shuffle(sample)
+        train_idx = sample[:train_size]
+        test_idx = sample[train_size:]
 
         for key in feature_keys:
-            results[key].append(one_round(ohe, arrays[key], sample))
+            results[key].append(one_round(ohe, arrays[key], sample, train_idx, test_idx))
         if VERBOSE and (i == 1 or i % PRINT_EVERY == 0 or i == K):
             print(f"\nround {i}/{K}")
             print_summary(results)
