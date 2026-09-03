@@ -66,6 +66,10 @@ def parse_args():
     parser.add_argument("--position_collection", choices=["as_saved", "full", "partial", "both"], default=["as_saved"], nargs="+", help="Which position views to store per embedding dir. Use 'both' for full_<key> and partial_<key>.")
     parser.add_argument("--sequence_colname", "--sequence_col", default=None, help="Sequence column used to infer full sequence length.")
     parser.add_argument("--full_sequence_length", type=int, default=None, help="Explicit full sequence length for deciding if saved embeddings contain all positions.")
+    parser.add_argument("--full_embedding_keys", nargs="*", default=None, help="Embedding keys to collect as full_<key>_<mean|flat>.")
+    parser.add_argument("--partial_embedding_keys", nargs="*", default=None, help="Embedding keys to collect as partial_<key>_<mean|flat>.")
+    parser.add_argument("--flat_embedding_keys", nargs="*", default=None, help="Embedding keys to flatten in the new full/partial spec mode.")
+    parser.add_argument("--mean_embedding_keys", nargs="*", default=None, help="Embedding keys to average in the new full/partial spec mode.")
     parser.add_argument("--mean", dest="mean", action="store_true", help="Average sequence/position embeddings to [N, D].")
     parser.add_argument("--flat", dest="mean", action="store_false", help="Flatten embeddings to [N, ...].")
     parser.set_defaults(mean=True)
@@ -234,7 +238,7 @@ def selected_dataframe_indices(df, args):
     return selected.astype(int)
 
 
-def load_embedding_chunks(args, df, selected_indices, position_collection, embedding_key, full_sequence_length):
+def load_embedding_chunks(args, df, selected_indices, position_collection, embedding_key, full_sequence_length, mean_embeddings):
     embedding_dir = Path(args.embedding_dir).expanduser()
     n_rows = len(df)
     chunks = []
@@ -283,7 +287,7 @@ def load_embedding_chunks(args, df, selected_indices, position_collection, embed
             embedding_key,
             k,
         )
-        emb = prepare_embedding_array(emb, mean_embeddings=args.mean)
+        emb = prepare_embedding_array(emb, mean_embeddings=mean_embeddings)
         chunks.append(emb)
         index_chunks.append(np.array([output_row_by_df_index[int(row_idx)] for row_idx in idx], dtype=int))
         print(f"[collect] nmut={k} embeddings={emb.shape} indices={idx.shape}")
@@ -320,13 +324,60 @@ def expand_per_embedding_arg(values, n, name):
     return list(values)
 
 
-def embedding_feature_specs(embedding_dirs, embedding_keys, position_collections):
+def using_explicit_embedding_specs(args):
+    return any(
+        value is not None
+        for value in (
+            args.full_embedding_keys,
+            args.partial_embedding_keys,
+            args.flat_embedding_keys,
+            args.mean_embedding_keys,
+        )
+    )
+
+
+def embedding_feature_specs(embedding_dirs, embedding_keys, position_collections, args):
+    if not using_explicit_embedding_specs(args):
+        specs = []
+        for embedding_dir, embedding_key, position_collection in zip(embedding_dirs, embedding_keys, position_collections):
+            modes = ["full", "partial"] if position_collection == "both" else [position_collection]
+            for mode in modes:
+                feature_key = embedding_key if mode == "as_saved" else f"{mode}_{embedding_key}"
+                specs.append((embedding_dir, feature_key, mode, args.mean))
+        keys = [spec[1] for spec in specs]
+        if len(set(keys)) != len(keys):
+            raise ValueError("expanded embedding feature keys must be unique")
+        return specs
+
+    known = set(embedding_keys)
+    configured = set()
+    for values in (args.full_embedding_keys, args.partial_embedding_keys, args.flat_embedding_keys, args.mean_embedding_keys):
+        configured.update(values or [])
+    unknown = sorted(configured - known)
+    if unknown:
+        raise ValueError(f"configured embedding keys are missing from --embedding_key: {unknown}")
+
     specs = []
-    for embedding_dir, embedding_key, position_collection in zip(embedding_dirs, embedding_keys, position_collections):
-        modes = ["full", "partial"] if position_collection == "both" else [position_collection]
-        for mode in modes:
-            feature_key = embedding_key if mode == "as_saved" else f"{mode}_{embedding_key}"
-            specs.append((embedding_dir, feature_key, mode))
+    for embedding_dir, embedding_key in zip(embedding_dirs, embedding_keys):
+        position_modes = []
+        if embedding_key in set(args.full_embedding_keys or []):
+            position_modes.append("full")
+        if embedding_key in set(args.partial_embedding_keys or []):
+            position_modes.append("partial")
+
+        repr_modes = []
+        if embedding_key in set(args.flat_embedding_keys or []):
+            repr_modes.append(("flat", False))
+        if embedding_key in set(args.mean_embedding_keys or []):
+            repr_modes.append(("mean", True))
+
+        for position_mode in position_modes:
+            for repr_name, mean_embeddings in repr_modes:
+                feature_key = f"{position_mode}_{embedding_key}_{repr_name}"
+                specs.append((embedding_dir, feature_key, position_mode, mean_embeddings))
+
+    if not specs:
+        raise ValueError("explicit embedding specs produced no output features")
     keys = [spec[1] for spec in specs]
     if len(set(keys)) != len(keys):
         raise ValueError("expanded embedding feature keys must be unique")
@@ -360,7 +411,7 @@ def main():
         raise ValueError("--embedding_key must have the same number of values as --embedding_dir")
     if len(set(embedding_keys)) != len(embedding_keys):
         raise ValueError("--embedding_key values must be unique")
-    embedding_specs = embedding_feature_specs(embedding_dirs, embedding_keys, position_collections)
+    embedding_specs = embedding_feature_specs(embedding_dirs, embedding_keys, position_collections, args)
 
     mutation_cols = relevant_mutation_columns(df, args.first_col, args.last_col)
     onehot = pd.get_dummies(selected_df[mutation_cols]).astype(np.float32).to_numpy()
@@ -376,9 +427,9 @@ def main():
         str(args.onehot_key): torch.as_tensor(onehot),
     }
 
-    for embedding_dir, embedding_key, position_collection in embedding_specs:
+    for embedding_dir, embedding_key, position_collection, mean_embeddings in embedding_specs:
         args.embedding_dir = embedding_dir
-        embeddings = load_embedding_chunks(args, df, selected_indices, position_collection, embedding_key, full_sequence_length)
+        embeddings = load_embedding_chunks(args, df, selected_indices, position_collection, embedding_key, full_sequence_length, mean_embeddings)
         payload[str(embedding_key)] = torch.as_tensor(embeddings)
         print(f"[collect] {embedding_key}={embeddings.shape}")
 
