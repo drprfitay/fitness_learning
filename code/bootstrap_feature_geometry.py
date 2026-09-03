@@ -28,6 +28,7 @@ SEED = 0
 ALPHAS = np.logspace(-2, 4, 13)
 RIDGE_CV_FOLDS = 5
 SUPPRESS_LINALG_WARNINGS = True
+PRINT_SELECTED_ALPHA = True
 
 VERBOSE = True
 PRINT_EVERY = 5
@@ -84,7 +85,7 @@ def global_r2(y, y_hat):
     return float(1.0 - numerator / denominator) if denominator > 0 else float("nan")
 
 
-def reconstruction_r2(x, y, train_idx, test_idx):
+def reconstruction_r2(x, y, train_idx, test_idx, label):
     model = make_pipeline(
         StandardScaler(),
         RidgeCV(alphas=ALPHAS, cv=RIDGE_CV_FOLDS),
@@ -96,6 +97,10 @@ def reconstruction_r2(x, y, train_idx, test_idx):
     else:
         model.fit(x[train_idx], y[train_idx])
 
+    ridge = model.named_steps["ridgecv"]
+    if VERBOSE and PRINT_SELECTED_ALPHA:
+        print(f"  {label} selected alpha: {ridge.alpha_}")
+
     y_hat = model.predict(x[test_idx])
     y_test = y[test_idx]
     return {
@@ -104,7 +109,7 @@ def reconstruction_r2(x, y, train_idx, test_idx):
     }
 
 
-def one_round(ohe, feat, sample, train_idx, test_idx):
+def one_round(ohe, feat, sample, train_idx, test_idx, feature_name):
     row = {
         "geometry_distance_spearman": geometry_distance_spearman(ohe[sample], feat[sample]),
     }
@@ -112,7 +117,8 @@ def one_round(ohe, feat, sample, train_idx, test_idx):
         ("ohe_to_feature", ohe, feat),
         ("feature_to_ohe", feat, ohe),
     ):
-        for key, value in reconstruction_r2(x, y, train_idx, test_idx).items():
+        label = f"{feature_name} {prefix}"
+        for key, value in reconstruction_r2(x, y, train_idx, test_idx, label).items():
             row[f"{prefix}_{key}"] = value
     return row
 
@@ -183,8 +189,10 @@ def main():
         train_idx = sample[:train_size]
         test_idx = sample[train_size:]
 
+        if VERBOSE and PRINT_SELECTED_ALPHA:
+            print(f"\nround {i}/{K} selected alphas")
         for key in feature_keys:
-            results[key].append(one_round(ohe, arrays[key], sample, train_idx, test_idx))
+            results[key].append(one_round(ohe, arrays[key], sample, train_idx, test_idx, key))
         if VERBOSE and (i == 1 or i % PRINT_EVERY == 0 or i == K):
             print(f"\nround {i}/{K}")
             print_summary(results)
