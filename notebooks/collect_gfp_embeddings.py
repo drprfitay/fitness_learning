@@ -14,6 +14,25 @@ args = parser.parse_args()
 
 df = pd.read_csv(args.input_csv)
 
+REQUIRED_TRAIN_FILES = ("embeddings.pt", "y_value.pt", "indices.pt")
+
+
+def load_tensor(path):
+    try:
+        return torch.load(path, weights_only=True)
+    except TypeError:
+        return torch.load(path)
+
+
+def find_train_dirs(intermediate_result_path):
+    train_dirs = []
+    for root, _, _ in os.walk(intermediate_result_path):
+        if os.path.basename(root) != "train":
+            continue
+        if all(os.path.exists(os.path.join(root, filename)) for filename in REQUIRED_TRAIN_FILES):
+            train_dirs.append(root)
+    return sorted(train_dirs)
+
 
 base_path = "/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/"
 
@@ -40,23 +59,28 @@ for intermediate_result_path, final_save_path, hs in zip(intermediate_result_pat
     
     print("Processing %s and saving to %s" % (intermediate_result_path, final_save_path))
 
-    subfolders = [f.name for f in os.scandir(intermediate_result_path) if f.is_dir()]
+    train_dirs = find_train_dirs(intermediate_result_path)
+    if not train_dirs:
+        raise FileNotFoundError(
+            "No train folders containing %s found under %s"
+            % (", ".join(REQUIRED_TRAIN_FILES), intermediate_result_path)
+        )
 
     embedding_all = torch.zeros([df.shape[0], 22, hs], dtype=torch.float)
     label_all = torch.zeros([df.shape[0]], dtype=torch.float)
     indices_all = torch.zeros([df.shape[0]], dtype=torch.int64)
 
-    for i, subfolder in enumerate(subfolders):
+    for i, train_dir in enumerate(train_dirs):
 
-        print("\tLoading %s [%d/%d]" % (subfolder, i, len(subfolders)))
-        embeddings = torch.load(os.path.join(intermediate_result_path, subfolder, "train", "embeddings.pt"))
-        embeddings = torch.load(os.path.join(intermediate_result_path, subfolder, "train", "embeddings.pt"))
+        subfolder = os.path.relpath(os.path.dirname(train_dir), intermediate_result_path)
+        print("\tLoading %s [%d/%d]" % (subfolder, i, len(train_dirs)))
+        embeddings = load_tensor(os.path.join(train_dir, "embeddings.pt"))
 
         print("MEAN: ", embeddings.mean(dim=1).mean(dim=1).mean())
         print("STD: ", embeddings.mean(dim=1).mean(dim=1).std())
 
-        labels = torch.load(os.path.join(intermediate_result_path, subfolder, "train", "y_value.pt"))
-        indices = torch.load(os.path.join(intermediate_result_path, subfolder, "train", "indices.pt"))
+        labels = load_tensor(os.path.join(train_dir, "y_value.pt"))
+        indices = load_tensor(os.path.join(train_dir, "indices.pt"))
         
         indices_all[indices] = indices
         label_all[indices] = labels.to(torch.float)
