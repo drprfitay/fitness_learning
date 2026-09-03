@@ -2,9 +2,11 @@
 """Bootstrap onehot-vs-feature geometry and linear reconstruction checks."""
 
 from pathlib import Path
+import warnings
 
 import numpy as np
 import pandas as pd
+from scipy.linalg import LinAlgWarning
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import spearmanr
 from sklearn.linear_model import RidgeCV
@@ -23,8 +25,9 @@ K = 100
 TEST_FRAC = 0.5
 SEED = 0
 
-ALPHAS = np.logspace(-4, 4, 25)
+ALPHAS = np.logspace(-2, 4, 13)
 RIDGE_CV_FOLDS = 5
+SUPPRESS_LINALG_WARNINGS = True
 
 VERBOSE = True
 PRINT_EVERY = 5
@@ -86,7 +89,13 @@ def reconstruction_r2(x, y, train_idx, test_idx):
         StandardScaler(),
         RidgeCV(alphas=ALPHAS, cv=RIDGE_CV_FOLDS),
     )
-    model.fit(x[train_idx], y[train_idx])
+    if SUPPRESS_LINALG_WARNINGS:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=LinAlgWarning)
+            model.fit(x[train_idx], y[train_idx])
+    else:
+        model.fit(x[train_idx], y[train_idx])
+
     y_hat = model.predict(x[test_idx])
     y_test = y[test_idx]
     return {
