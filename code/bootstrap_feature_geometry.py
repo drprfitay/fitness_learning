@@ -9,7 +9,8 @@ import pandas as pd
 from scipy.linalg import LinAlgWarning
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import spearmanr
-from sklearn.linear_model import RidgeCV
+from scipy.cluster.hierarchy import leaves_list, linkage
+from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.metrics import r2_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -27,8 +28,17 @@ SEED = 0
 
 ALPHAS = np.logspace(-2, 4, 13)
 RIDGE_CV_FOLDS = 5
+USE_FIXED_ALPHA = False
+FIXED_ALPHA = 100.0
 SUPPRESS_LINALG_WARNINGS = True
 PRINT_SELECTED_ALPHA = True
+REPORT_OHE_TO_FEATURE_R2_QUANTILES = False
+R2_QUANTILES = [0, 5, 25, 50, 75, 95, 100]
+
+SAVE_RECONSTRUCTION_EXAMPLES = False
+RECONSTRUCTION_DIRNAME = "reconstruction_analysis"
+HEATMAP_MAX_VARIANTS = 200
+HEATMAP_MAX_FEATURES = 300
 
 VERBOSE = True
 PRINT_EVERY = 5
@@ -85,11 +95,20 @@ def global_r2(y, y_hat):
     return float(1.0 - numerator / denominator) if denominator > 0 else float("nan")
 
 
-def reconstruction_r2(x, y, train_idx, test_idx, label):
-    model = make_pipeline(
-        StandardScaler(),
-        RidgeCV(alphas=ALPHAS, cv=RIDGE_CV_FOLDS),
-    )
+def make_ridge_model():
+    if USE_FIXED_ALPHA:
+        return make_pipeline(StandardScaler(), Ridge(alpha=FIXED_ALPHA))
+    return make_pipeline(StandardScaler(), RidgeCV(alphas=ALPHAS, cv=RIDGE_CV_FOLDS))
+
+
+def model_alpha(model):
+    if USE_FIXED_ALPHA:
+        return FIXED_ALPHA
+    return model.named_steps["ridgecv"].alpha_
+
+
+def reconstruction_r2(x, y, train_idx, test_idx, label, report_quantiles=False, return_example=False):
+    model = make_ridge_model()
     if SUPPRESS_LINALG_WARNINGS:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=LinAlgWarning)
@@ -97,30 +116,46 @@ def reconstruction_r2(x, y, train_idx, test_idx, label):
     else:
         model.fit(x[train_idx], y[train_idx])
 
-    ridge = model.named_steps["ridgecv"]
     if VERBOSE and PRINT_SELECTED_ALPHA:
-        print(f"  {label} selected alpha: {ridge.alpha_}")
+        print(f"  {label} alpha: {model_alpha(model)}")
 
     y_hat = model.predict(x[test_idx])
     y_test = y[test_idx]
-    return {
+    scores = {
         "global_r2": global_r2(y_test, y_hat),
         "weighted_r2": float(r2_score(y_test, y_hat, multioutput="variance_weighted")),
     }
+    if report_quantiles:
+        per_feature_r2 = r2_score(y_test, y_hat, multioutput="raw_values")
+        for q in R2_QUANTILES:
+            scores[f"per_feature_r2_q{q}"] = float(np.percentile(per_feature_r2, q))
+    if return_example:
+        return scores, y_test, y_hat
+    return scores
 
 
-def one_round(ohe, feat, sample, train_idx, test_idx, feature_name):
+def one_round(ohe, feat, sample, train_idx, test_idx, feature_name, return_example=False):
     row = {
         "geometry_distance_spearman": geometry_distance_spearman(ohe[sample], feat[sample]),
     }
+    example = None
     for prefix, x, y in (
         ("ohe_to_feature", ohe, feat),
         ("feature_to_ohe", feat, ohe),
     ):
         label = f"{feature_name} {prefix}"
-        for key, value in reconstruction_r2(x, y, train_idx, test_idx, label).items():
+        report_quantiles = prefix == "ohe_to_feature" and REPORT_OHE_TO_FEATURE_R2_QUANTILES
+        result = reconstruction_r2(x, y, train_idx, test_idx, label, report_quantiles, return_example)
+        if return_example:
+            scores, y_test, y_hat = result
+            if example is None:
+                example = {"test_idx": test_idx}
+            example[prefix] = {"actual": y_test, "pred": y_hat}
+        else:
+            scores = result
+        for key, value in scores.items():
             row[f"{prefix}_{key}"] = value
-    return row
+    return row, example
 
 
 def summarize(values):
@@ -163,18 +198,101 @@ def save_summary(results):
     print(f"\nsaved {out}")
 
 
+def ordered_indices(x, axis):
+    n = x.shape[axis]
+    if n <= 1:
+        return np.arange(n)
+    values = x if axis == 0 else x.T
+    try:
+        return leaves_list(linkage(values, method="average", metric="euclidean"))
+    except ValueError:
+        return np.arange(n)
+
+
+def heatmap_order(x):
+    row_idx = np.arange(x.shape[0])
+    col_idx = np.arange(x.shape[1])
+    if len(row_idx) > HEATMAP_MAX_VARIANTS:
+        row_idx = row_idx[:HEATMAP_MAX_VARIANTS]
+    if len(col_idx) > HEATMAP_MAX_FEATURES:
+        col_idx = np.argsort(np.nanvar(x, axis=0))[-HEATMAP_MAX_FEATURES:]
+
+    view = x[np.ix_(row_idx, col_idx)]
+    row_idx = row_idx[ordered_indices(view, axis=0)]
+    col_idx = col_idx[ordered_indices(view, axis=1)]
+    return row_idx, col_idx
+
+
+def heatmap_limit(x):
+    limit = np.nanpercentile(np.abs(x), 99)
+    if not np.isfinite(limit) or limit == 0:
+        return 1.0
+    return limit
+
+
+def save_ohe_to_feature_heatmap(feature_dir, feature_name, actual, pred):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    row_idx, col_idx = heatmap_order(actual)
+    actual_view = actual[np.ix_(row_idx, col_idx)]
+    pred_view = pred[np.ix_(row_idx, col_idx)]
+    error_view = pred_view - actual_view
+    vmax = heatmap_limit(np.r_[actual_view.ravel(), pred_view.ravel()])
+    err_vmax = heatmap_limit(error_view)
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    for ax, data, title, limit in (
+        (axes[0], actual_view, "actual", vmax),
+        (axes[1], pred_view, "pred", vmax),
+        (axes[2], error_view, "pred - actual", err_vmax),
+    ):
+        im = ax.imshow(data, aspect="auto", cmap="viridis" if title != "pred - actual" else "coolwarm", vmin=-limit if title == "pred - actual" else None, vmax=limit)
+        ax.set_title(title)
+        ax.set_xlabel("features")
+        ax.set_ylabel("variants")
+        fig.colorbar(im, ax=ax, fraction=0.046)
+    fig.suptitle(f"{feature_name} ohe -> feature")
+    fig.savefig(feature_dir / "ohe_to_feature_heatmap.png", dpi=180)
+    plt.close(fig)
+
+
+def save_reconstruction_example(feature_name, ohe, feat, example):
+    base = Path(FEATURES_PT).expanduser().parent / RECONSTRUCTION_DIRNAME / feature_name
+    base.mkdir(parents=True, exist_ok=True)
+
+    test_idx = example["test_idx"]
+    np.save(base / "test_indices.npy", test_idx)
+    np.save(base / "original_onehot.npy", ohe[test_idx])
+    np.save(base / "original_embedding.npy", feat[test_idx])
+
+    for direction in ("ohe_to_feature", "feature_to_ohe"):
+        np.save(base / f"{direction}_actual.npy", example[direction]["actual"])
+        np.save(base / f"{direction}_pred.npy", example[direction]["pred"])
+
+    save_ohe_to_feature_heatmap(
+        base,
+        feature_name,
+        example["ohe_to_feature"]["actual"],
+        example["ohe_to_feature"]["pred"],
+    )
+
+
 def main():
     arrays = load_features(FEATURES_PT)
     ohe = arrays[ONEHOT_KEY]
-    train_size = int(round(N * (1.0 - TEST_FRAC)))
+    sample_size = len(ohe) if N == -1 else N
+    train_size = int(round(sample_size * (1.0 - TEST_FRAC)))
 
-    if N > len(ohe):
+    if sample_size > len(ohe):
         raise ValueError(f"N={N} is larger than row count {len(ohe)}")
-    if N < 3:
-        raise ValueError("N must be at least 3")
-    if train_size == 0 or train_size == N:
+    if sample_size < 3:
+        raise ValueError("N must be -1 or at least 3")
+    if train_size == 0 or train_size == sample_size:
         raise ValueError("TEST_FRAC leaves an empty train or test split")
-    if train_size < RIDGE_CV_FOLDS:
+    if not USE_FIXED_ALPHA and train_size < RIDGE_CV_FOLDS:
         raise ValueError("train split is smaller than RIDGE_CV_FOLDS")
 
     rng = np.random.default_rng(SEED)
@@ -184,7 +302,7 @@ def main():
     results = {k: [] for k in feature_keys}
 
     for i in range(1, K + 1):
-        sample = rng.choice(len(ohe), size=N, replace=False)
+        sample = rng.choice(len(ohe), size=sample_size, replace=False)
         rng.shuffle(sample)
         train_idx = sample[:train_size]
         test_idx = sample[train_size:]
@@ -192,7 +310,18 @@ def main():
         if VERBOSE and PRINT_SELECTED_ALPHA:
             print(f"\nround {i}/{K} selected alphas")
         for key in feature_keys:
-            results[key].append(one_round(ohe, arrays[key], sample, train_idx, test_idx, key))
+            row, example = one_round(
+                ohe,
+                arrays[key],
+                sample,
+                train_idx,
+                test_idx,
+                key,
+                return_example=SAVE_RECONSTRUCTION_EXAMPLES and i == 1,
+            )
+            results[key].append(row)
+            if example is not None:
+                save_reconstruction_example(key, ohe, arrays[key], example)
         if VERBOSE and (i == 1 or i % PRINT_EVERY == 0 or i == K):
             print(f"\nround {i}/{K}")
             print_summary(results)
