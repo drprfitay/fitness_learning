@@ -61,6 +61,10 @@ def parse_args():
     parser.add_argument("--output", default=None, help="Output .pt path. Defaults to <sequence_df_dir>/features.pt")
     parser.add_argument("--embedding_key", default=None, nargs="+", help="Feature key for embeddings. Defaults to each embedding directory name.")
     parser.add_argument("--onehot_key", default="onehot")
+    parser.add_argument("--pssm_path", default=None, help="Optional PSSM CSV to add as a one-column feature.")
+    parser.add_argument("--pssm_key", default="pssm_score")
+    parser.add_argument("--pssm_score", choices=["avg", "fitness", "avg_score", "avg_fitness"], default="avg")
+    parser.add_argument("--wt_sequence_df_path", default=None, help="Optional WT sequence CSV for --pssm_score fitness. Defaults to first row of sequence_df.")
     parser.add_argument("--positions_to_select", type=int, nargs="+", default=None, help="Positions to select when saved embeddings contain the full sequence.")
     parser.add_argument("--position_indexing", choices=["model", "embedding"], default="model", help="'model' uses one-based model positions. 'embedding' uses zero-based embedding tensor indices.")
     parser.add_argument("--position_collection", choices=["as_saved", "full", "partial", "both"], default=["as_saved"], nargs="+", help="Which position views to store per embedding dir. Use 'both' for full_<key> and partial_<key>.")
@@ -236,6 +240,52 @@ def selected_dataframe_indices(df, args):
     selected = np.where(df[args.num_muts_col].astype(int).to_numpy() <= args.max_num_muts)[0]
     print(f"[collect] selected {len(selected)}/{len(df)} rows with {args.num_muts_col} <= {args.max_num_muts}")
     return selected.astype(int)
+
+
+def load_pssm(path):
+    pssm = pd.read_csv(Path(path).expanduser())
+    return pssm.loc[:, ~pssm.columns.astype(str).str.startswith("Unnamed:")]
+
+
+def mutation_column_positions(mutation_cols):
+    positions = []
+    for col in mutation_cols:
+        match = re.search(r"\d+", str(col))
+        if match is None:
+            raise ValueError(f"could not parse residue position from column {col!r}")
+        positions.append(int(match.group(0)) - 1)
+    return np.asarray(positions, dtype=int)
+
+
+def pssm_feature(df, selected_indices, mutation_cols, args):
+    pssm = load_pssm(args.pssm_path)
+    pssm_values = pssm.to_numpy(dtype=float)
+    aa_to_column = {str(aa): idx for idx, aa in enumerate(pssm.columns)}
+    positions = mutation_column_positions(mutation_cols)
+    if np.any(positions < 0) or np.any(positions >= pssm_values.shape[0]):
+        raise IndexError("mutation columns point outside PSSM rows")
+
+    wt_df = pd.read_csv(Path(args.wt_sequence_df_path).expanduser()) if args.wt_sequence_df_path else df
+    wt_sequence = wt_df.loc[:, mutation_cols].iloc[0].to_numpy()
+    wt_columns = np.asarray([aa_to_column[str(aa)] for aa in wt_sequence], dtype=int)
+    wt_score = pssm_values[positions, wt_columns]
+
+    score_name = "avg_fitness" if args.pssm_score in {"fitness", "avg_fitness"} else "avg_score"
+    selected_df = df.iloc[selected_indices]
+    denominators = selected_df[args.num_muts_col].to_numpy(dtype=float)
+    denominators[pd.isna(denominators) | (denominators == 0)] = 1.0
+
+    scores = []
+    for denominator, (_, row) in zip(denominators, selected_df.iterrows()):
+        sequence = row.loc[mutation_cols].to_numpy()
+        columns = np.asarray([aa_to_column[str(aa)] for aa in sequence], dtype=int)
+        sequence_score = pssm_values[positions, columns]
+        if score_name == "avg_fitness":
+            value = (sequence_score - wt_score).sum() / denominator
+        else:
+            value = sequence_score.sum() / denominator
+        scores.append(value)
+    return np.asarray(scores, dtype=np.float32).reshape(-1, 1), score_name
 
 
 def load_embedding_chunks(args, df, selected_indices, position_collection, embedding_key, full_sequence_length, mean_embeddings):
@@ -426,6 +476,10 @@ def main():
         str(args.activity_col): torch.as_tensor(activity),
         str(args.onehot_key): torch.as_tensor(onehot),
     }
+    if args.pssm_path is not None:
+        scores, score_name = pssm_feature(df, selected_indices, mutation_cols, args)
+        payload[str(args.pssm_key)] = torch.as_tensor(scores)
+        print(f"[collect] {args.pssm_key}={scores.shape} source={score_name}")
 
     for embedding_dir, embedding_key, position_collection, mean_embeddings in embedding_specs:
         args.embedding_dir = embedding_dir
