@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 
 FEATURES_PT = Path("features.pt")
 SAVE_CSV = None
+DATASET_NAME = None
 ONEHOT_KEY = "onehot"
 SKIP_KEYS = {"activity"}
 
@@ -89,6 +90,18 @@ def geometry_distance_spearman(ohe, feat):
     return float(spearmanr(cosine_distance, hamming_distance).correlation)
 
 
+def pairwise_matrices(ohe, feat):
+    feat_norm = feat / np.maximum(np.linalg.norm(feat, axis=1, keepdims=True), 1e-12)
+    cosine_similarity = feat_norm @ feat_norm.T
+    hamming_distance = squareform(pdist(ohe.reshape(len(ohe), -1), metric="hamming"))
+    return {
+        "embedding_cosine_similarity": cosine_similarity,
+        "embedding_cosine_distance": 1.0 - cosine_similarity,
+        "onehot_hamming_distance": hamming_distance,
+        "onehot_hamming_similarity": 1.0 - hamming_distance,
+    }
+
+
 def global_r2(y, y_hat):
     numerator = ((y - y_hat) ** 2).sum()
     denominator = ((y - y.mean(axis=0)) ** 2).sum()
@@ -116,8 +129,9 @@ def reconstruction_r2(x, y, train_idx, test_idx, label, report_quantiles=False, 
     else:
         model.fit(x[train_idx], y[train_idx])
 
+    alpha = model_alpha(model)
     if VERBOSE and PRINT_SELECTED_ALPHA:
-        print(f"  {label} alpha: {model_alpha(model)}")
+        print(f"  {label} alpha: {alpha}")
 
     y_hat = model.predict(x[test_idx])
     y_test = y[test_idx]
@@ -130,8 +144,8 @@ def reconstruction_r2(x, y, train_idx, test_idx, label, report_quantiles=False, 
         for q in R2_QUANTILES:
             scores[f"per_feature_r2_q{q}"] = float(np.percentile(per_feature_r2, q))
     if return_example:
-        return scores, y_test, y_hat
-    return scores
+        return scores, alpha, y_test, y_hat
+    return scores, alpha
 
 
 def one_round(ohe, feat, sample, train_idx, test_idx, feature_name, return_example=False):
@@ -147,12 +161,13 @@ def one_round(ohe, feat, sample, train_idx, test_idx, feature_name, return_examp
         report_quantiles = prefix == "ohe_to_feature" and REPORT_OHE_TO_FEATURE_R2_QUANTILES
         result = reconstruction_r2(x, y, train_idx, test_idx, label, report_quantiles, return_example)
         if return_example:
-            scores, y_test, y_hat = result
+            scores, alpha, y_test, y_hat = result
             if example is None:
-                example = {"test_idx": test_idx}
+                example = {"sample_idx": sample, "test_idx": test_idx}
             example[prefix] = {"actual": y_test, "pred": y_hat}
         else:
-            scores = result
+            scores, alpha = result
+        row[f"{prefix}_alpha"] = alpha
         for key, value in scores.items():
             row[f"{prefix}_{key}"] = value
     return row, example
@@ -171,6 +186,8 @@ def summary_rows(results):
     for key, values in results.items():
         row = {"feature": key}
         for metric in values[0]:
+            if metric.endswith("_alpha"):
+                continue
             mean, std = summarize([r[metric] for r in values])
             row[f"{metric}_mean"] = mean
             row[f"{metric}_std"] = std
@@ -185,16 +202,70 @@ def print_summary(results):
     for row in summary_rows(results):
         print(
             f"{row['feature']:<8} "
-            f"{row['geometry_distance_spearman_mean']:>7.3f}+/-{row['geometry_distance_spearman_std']:<6.3f} "
-            f"{row['ohe_to_feature_weighted_r2_mean']:>7.3f}+/-{row['ohe_to_feature_weighted_r2_std']:<6.3f} "
-            f"{row['feature_to_ohe_weighted_r2_mean']:>7.3f}+/-{row['feature_to_ohe_weighted_r2_std']:<6.3f}"
+            f"{row['geometry_distance_spearman_mean']:>7.3f} "
+            f"{row['ohe_to_feature_weighted_r2_mean']:>7.3f} "
+            f"{row['feature_to_ohe_weighted_r2_mean']:>7.3f}"
         )
 
 
-def save_summary(results):
+def metric_alpha(metric, row):
+    if metric.startswith("ohe_to_feature_"):
+        return row["ohe_to_feature_alpha"]
+    if metric.startswith("feature_to_ohe_"):
+        return row["feature_to_ohe_alpha"]
+    return float("nan")
+
+
+def output_metric_name(metric):
+    if metric == "geometry_distance_spearman":
+        return "geom_rho"
+    if metric == "ohe_to_feature_weighted_r2":
+        return "ohe_feat_r2"
+    if metric == "feature_to_ohe_weighted_r2":
+        return "feat_ohe_r2"
+    if metric == "ohe_to_feature_global_r2":
+        return "ohe_feat_global_r2"
+    if metric == "feature_to_ohe_global_r2":
+        return "feat_ohe_global_r2"
+    if metric.startswith("ohe_to_feature_per_feature_r2_q"):
+        return metric.replace("ohe_to_feature_per_feature_r2_q", "ohe_feat_r2_q")
+    return metric
+
+
+def dataset_name():
+    if DATASET_NAME is not None:
+        return DATASET_NAME
+    parent = Path(FEATURES_PT).expanduser().parent
+    return parent.name if parent.name else Path(FEATURES_PT).expanduser().stem
+
+
+def iteration_rows(results, train_size, test_size):
+    rows = []
+    dataset = dataset_name()
+    for feature, feature_results in results.items():
+        for iteration, result in enumerate(feature_results, start=1):
+            for metric, value in result.items():
+                if metric.endswith("_alpha"):
+                    continue
+                rows.append(
+                    {
+                        "dataset": dataset,
+                        "iteration": iteration,
+                        "feature": feature,
+                        "metric": output_metric_name(metric),
+                        "alpha": metric_alpha(metric, result),
+                        "train_size": train_size,
+                        "test_size": test_size,
+                        "value": value,
+                    }
+                )
+    return rows
+
+
+def save_results(results, train_size, test_size):
     out = Path(SAVE_CSV).expanduser() if SAVE_CSV else Path(FEATURES_PT).expanduser().with_suffix(".csv")
     out.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(summary_rows(results)).to_csv(out, index=False)
+    pd.DataFrame(iteration_rows(results, train_size, test_size)).to_csv(out, index=False)
     print(f"\nsaved {out}")
 
 
@@ -263,10 +334,17 @@ def save_reconstruction_example(feature_name, ohe, feat, example):
     base = Path(FEATURES_PT).expanduser().parent / RECONSTRUCTION_DIRNAME / feature_name
     base.mkdir(parents=True, exist_ok=True)
 
+    sample_idx = example["sample_idx"]
     test_idx = example["test_idx"]
+    np.save(base / "sample_indices.npy", sample_idx)
     np.save(base / "test_indices.npy", test_idx)
+    np.save(base / "sample_original_onehot.npy", ohe[sample_idx])
+    np.save(base / "sample_original_embedding.npy", feat[sample_idx])
     np.save(base / "original_onehot.npy", ohe[test_idx])
     np.save(base / "original_embedding.npy", feat[test_idx])
+
+    for name, matrix in pairwise_matrices(ohe[sample_idx], feat[sample_idx]).items():
+        np.save(base / f"sample_pairwise_{name}.npy", matrix)
 
     for direction in ("ohe_to_feature", "feature_to_ohe"):
         np.save(base / f"{direction}_actual.npy", example[direction]["actual"])
@@ -328,7 +406,7 @@ def main():
 
     print("\nfinal")
     print_summary(results)
-    save_summary(results)
+    save_results(results, train_size, sample_size - train_size)
 
 
 if __name__ == "__main__":
