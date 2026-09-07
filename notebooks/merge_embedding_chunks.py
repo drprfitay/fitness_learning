@@ -26,8 +26,10 @@ def chunk_paths(folder, prefix):
     return sorted(paths, key=nmut_from_name)
 
 
-def merge_one_folder(folder, df=None, y_col=None):
+def merge_one_folder(folder, df=None, y_col=None, max_nmut=None, num_muts_col="num_muts"):
     emb_paths = chunk_paths(folder, "embeddings")
+    if max_nmut is not None:
+        emb_paths = [path for path in emb_paths if nmut_from_name(path) <= max_nmut]
     if len(emb_paths) == 0:
         raise FileNotFoundError("No embeddings_of_nmut_*.pt files in %s" % folder)
 
@@ -72,12 +74,23 @@ def merge_one_folder(folder, df=None, y_col=None):
         raise ValueError("Duplicate indices found in %s" % folder)
 
     if df is not None:
-        if indices.numel() != len(df):
-            raise ValueError("Merged rows in %s are %d, dataframe has %d" % (folder, indices.numel(), len(df)))
+        expected_indices = torch.arange(len(df))
+        if max_nmut is not None:
+            if num_muts_col not in df.columns:
+                raise ValueError("Cannot validate --max_nmut because df is missing column %r" % num_muts_col)
+            expected_indices = torch.as_tensor(
+                df.index[df[num_muts_col].astype(int) <= int(max_nmut)].to_numpy(),
+                dtype=indices.dtype,
+            )
+        if indices.numel() != expected_indices.numel():
+            raise ValueError(
+                "Merged rows in %s are %d, expected %d from dataframe"
+                % (folder, indices.numel(), expected_indices.numel())
+            )
         if indices.max().item() >= len(df):
             raise ValueError("Index outside dataframe length in %s" % folder)
-        if not torch.equal(indices.cpu(), torch.arange(len(df))):
-            raise ValueError("Merged indices in %s do not cover dataframe rows exactly" % folder)
+        if not torch.equal(indices.cpu(), expected_indices.cpu()):
+            raise ValueError("Merged indices in %s do not cover expected dataframe rows exactly" % folder)
         if y_col is not None:
             expected_y = torch.as_tensor(df.iloc[indices.numpy()][y_col].to_numpy(), dtype=y_values.dtype)
             if not torch.allclose(y_values.cpu(), expected_y.cpu(), equal_nan=True):
@@ -106,6 +119,8 @@ def main():
     parser.add_argument("--dataset")
     parser.add_argument("--dataset_csv")
     parser.add_argument("--y_col")
+    parser.add_argument("--max_nmut", "--max_nmuts", "--max_muts", type=int, default=None)
+    parser.add_argument("--num_muts_col", default="num_muts")
     parser.add_argument("--embedding_keys", nargs="*", default=[])
     parser.add_argument("--embedding_dirs", nargs="*", default=[])
     args = parser.parse_args()
@@ -129,7 +144,7 @@ def main():
         raise ValueError("Provide --embedding_dirs or --dataset with --embedding_keys")
 
     for folder in folders:
-        merge_one_folder(folder, df=df, y_col=args.y_col)
+        merge_one_folder(folder, df=df, y_col=args.y_col, max_nmut=args.max_nmut, num_muts_col=args.num_muts_col)
 
 
 if __name__ == "__main__":
