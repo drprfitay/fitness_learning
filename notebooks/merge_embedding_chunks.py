@@ -26,7 +26,7 @@ def chunk_paths(folder, prefix):
     return sorted(paths, key=nmut_from_name)
 
 
-def merge_one_folder(folder, df=None, y_col=None, max_nmut=None, num_muts_col="num_muts", skip_y_values=False):
+def merge_one_folder(folder, df=None, y_col=None, max_nmut=None, num_muts_col="num_muts", skip_y_validation=False):
     emb_paths = chunk_paths(folder, "embeddings")
     if max_nmut is not None:
         emb_paths = [path for path in emb_paths if nmut_from_name(path) <= max_nmut]
@@ -44,36 +44,34 @@ def merge_one_folder(folder, df=None, y_col=None, max_nmut=None, num_muts_col="n
 
         if not os.path.exists(idx_path):
             idx_path = os.path.join(folder, "indices_of_nmuts_%d.pt" % nmut)
-        if not skip_y_values and not os.path.exists(y_path):
+        if not os.path.exists(y_path):
             y_path = os.path.join(folder, "y_values_of_nmuts_%d.pt" % nmut)
         if not os.path.exists(idx_path):
             raise FileNotFoundError("Missing index chunk for nmut=%d in %s" % (nmut, folder))
-        if not skip_y_values and not os.path.exists(y_path):
+        if not os.path.exists(y_path):
             raise FileNotFoundError("Missing y chunk for nmut=%d in %s" % (nmut, folder))
 
         embeddings = load_pt(emb_path)
         indices = load_pt(idx_path).long().view(-1)
-        y_values = None if skip_y_values else load_pt(y_path).view(-1)
+        y_values = load_pt(y_path).view(-1)
 
         if embeddings.shape[0] != indices.numel():
             raise ValueError("Chunk length mismatch for nmut=%d in %s" % (nmut, folder))
-        if not skip_y_values and indices.numel() != y_values.numel():
+        if indices.numel() != y_values.numel():
             raise ValueError("Chunk y length mismatch for nmut=%d in %s" % (nmut, folder))
 
         all_embeddings.append(embeddings)
         all_indices.append(indices)
-        if not skip_y_values:
-            all_y.append(y_values)
+        all_y.append(y_values)
 
     embeddings = torch.cat(all_embeddings, dim=0)
     indices = torch.cat(all_indices, dim=0)
-    y_values = None if skip_y_values else torch.cat(all_y, dim=0)
+    y_values = torch.cat(all_y, dim=0)
 
     order = torch.argsort(indices)
     embeddings = embeddings[order]
     indices = indices[order]
-    if not skip_y_values:
-        y_values = y_values[order]
+    y_values = y_values[order]
 
     unique_indices = torch.unique(indices)
     if unique_indices.numel() != indices.numel():
@@ -97,7 +95,7 @@ def merge_one_folder(folder, df=None, y_col=None, max_nmut=None, num_muts_col="n
             raise ValueError("Index outside dataframe length in %s" % folder)
         if not torch.equal(indices.cpu(), expected_indices.cpu()):
             raise ValueError("Merged indices in %s do not cover expected dataframe rows exactly" % folder)
-        if y_col is not None and not skip_y_values:
+        if y_col is not None and not skip_y_validation:
             expected_y = torch.as_tensor(df.iloc[indices.numpy()][y_col].to_numpy(), dtype=y_values.dtype)
             if not torch.allclose(y_values.cpu(), expected_y.cpu(), equal_nan=True):
                 close = torch.isclose(y_values.cpu(), expected_y.cpu(), equal_nan=True)
@@ -114,8 +112,7 @@ def merge_one_folder(folder, df=None, y_col=None, max_nmut=None, num_muts_col="n
                 raise ValueError("y_values do not match df[%r] in %s" % (y_col, folder))
 
     torch.save(embeddings, os.path.join(folder, "embeddings.pt"))
-    if not skip_y_values:
-        torch.save(y_values, os.path.join(folder, "y_values.pt"))
+    torch.save(y_values, os.path.join(folder, "y_values.pt"))
     torch.save(indices, os.path.join(folder, "indices.pt"))
 
     print("%s: saved %d rows ordered by indices" % (folder, indices.numel()))
@@ -126,7 +123,13 @@ def main():
     parser.add_argument("--dataset")
     parser.add_argument("--dataset_csv")
     parser.add_argument("--y_col")
-    parser.add_argument("--skip_y_values", action="store_true", default=False)
+    parser.add_argument(
+        "--skip_y_validation",
+        "--skip_y_values",
+        dest="skip_y_validation",
+        action="store_true",
+        default=False,
+    )
     parser.add_argument("--max_nmut", "--max_nmuts", "--max_muts", type=int, default=None)
     parser.add_argument("--num_muts_col", default="num_muts")
     parser.add_argument("--embedding_keys", nargs="*", default=[])
@@ -158,7 +161,7 @@ def main():
             y_col=args.y_col,
             max_nmut=args.max_nmut,
             num_muts_col=args.num_muts_col,
-            skip_y_values=args.skip_y_values,
+            skip_y_validation=args.skip_y_validation,
         )
 
 
