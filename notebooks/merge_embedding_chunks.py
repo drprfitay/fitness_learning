@@ -81,6 +81,17 @@ def merge_one_folder(folder, df=None, y_col=None):
         if y_col is not None:
             expected_y = torch.as_tensor(df.iloc[indices.numpy()][y_col].to_numpy(), dtype=y_values.dtype)
             if not torch.allclose(y_values.cpu(), expected_y.cpu(), equal_nan=True):
+                close = torch.isclose(y_values.cpu(), expected_y.cpu(), equal_nan=True)
+                bad = torch.where(~close)[0]
+                diff = y_values.cpu() - expected_y.cpu()
+                print("y_values mismatch in %s" % folder)
+                print("bad rows: %d / %d" % (bad.numel(), y_values.numel()))
+                print("max abs diff: %s" % diff[bad].abs().max().item())
+                for i in bad[:10].tolist():
+                    print(
+                        "  row=%d index=%d saved=%s expected=%s diff=%s" %
+                        (i, indices[i].item(), y_values[i].item(), expected_y[i].item(), diff[i].item())
+                    )
                 raise ValueError("y_values do not match df[%r] in %s" % (y_col, folder))
 
     torch.save(embeddings, os.path.join(folder, "embeddings.pt"))
