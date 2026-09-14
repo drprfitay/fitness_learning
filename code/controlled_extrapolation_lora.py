@@ -15,8 +15,17 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-CODE_DIR = Path(__file__).resolve().parents[1]
-ROOT_DIR = CODE_DIR.parent
+def find_project_paths():
+    script_path = Path(__file__).resolve()
+    for parent in [script_path.parent] + list(script_path.parents):
+        if (parent / "plm_base.py").exists() and (parent.parent / "models/esm2").exists():
+            return parent, parent.parent
+        if (parent / "code/plm_base.py").exists() and (parent / "models/esm2").exists():
+            return parent / "code", parent
+    raise RuntimeError("could not find fitness_learning code/ and models/esm2 directories from %s" % script_path)
+
+
+CODE_DIR, ROOT_DIR = find_project_paths()
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
