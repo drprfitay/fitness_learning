@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 import sys
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ CODE_DIR, ROOT_DIR = find_project_paths()
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
-from new_trainer import configure_trainable_parameters, resolve_token_ids
+from new_trainer import resolve_token_ids
 from plm_base import plmEmbeddingModel, plm_init
 from sequence_embedding_scoring_analysis import MLPScorer, evaluate_predictions
 
@@ -87,6 +88,17 @@ DATASET_CONFIGS = {
         "label_column": "activity",
         "task_type": "regression",
     },
+}
+
+LORA_TARGET_ALIASES = {
+    "query": ["q_proj", "query"],
+    "key": ["k_proj", "key"],
+    "value": ["v_proj", "value"],
+    "output": ["out_proj", "dense"],
+}
+
+LORA_SCOPE_TARGETS = {
+    "qv": ["query", "value"],
 }
 
 
@@ -306,6 +318,214 @@ def tokenize_sequences(df, spec, model, model_name):
     return encoded
 
 
+def transformer_backbone_roots(model):
+    roots = []
+    if hasattr(model, "layers"):
+        roots.append(("layers", model.layers))
+    if hasattr(model, "encoder"):
+        encoder = model.encoder
+        if hasattr(encoder, "layer"):
+            roots.append(("encoder.layer", encoder.layer))
+        if hasattr(encoder, "block"):
+            roots.append(("encoder.block", encoder.block))
+        if hasattr(encoder, "layers"):
+            roots.append(("encoder.layers", encoder.layers))
+    if hasattr(model, "transformer"):
+        transformer = model.transformer
+        if hasattr(transformer, "h"):
+            roots.append(("transformer.h", transformer.h))
+        if hasattr(transformer, "layers"):
+            roots.append(("transformer.layers", transformer.layers))
+    if not roots:
+        raise ValueError("could not identify transformer backbone layers for LoRA targeting")
+    return roots
+
+
+def iter_backbone_linear_modules(model):
+    for root_name, root_module in transformer_backbone_roots(model):
+        for name, module in root_module.named_modules():
+            if isinstance(module, nn.Linear):
+                full_name = "%s.%s" % (root_name, name) if name else root_name
+                yield full_name, module
+
+
+def resolve_named_lora_targets(model, requested_targets):
+    requested_targets = [str(target) for target in requested_targets]
+    linear_module_names = [name for name, _module in iter_backbone_linear_modules(model)]
+    linear_leaf_names = {name.split(".")[-1] for name in linear_module_names}
+    resolved_leaf_names = []
+    for requested in requested_targets:
+        candidates = LORA_TARGET_ALIASES.get(requested, [requested])
+        matched = [candidate for candidate in candidates if candidate in linear_leaf_names]
+        if not matched:
+            raise ValueError(
+                "could not resolve LoRA target module %r under transformer backbone. Available Linear leaf names include: %s" %
+                (requested, ", ".join(sorted(linear_leaf_names)[:50]))
+            )
+        resolved_leaf_names.append(matched[0])
+    return sorted(name for name in linear_module_names if name.split(".")[-1] in set(resolved_leaf_names))
+
+
+def resolve_lora_target_modules(model, args):
+    if args.lora_scope == "all_linear":
+        return sorted(name for name, _module in iter_backbone_linear_modules(model))
+    if args.lora_scope == "qv":
+        requested_targets = args.lora_target_modules or LORA_SCOPE_TARGETS["qv"]
+        return resolve_named_lora_targets(model, requested_targets)
+    raise ValueError("unsupported LoRA scope: %s" % args.lora_scope)
+
+
+def replace_target_linear_with_lora(module, target_module_names, r, alpha, dropout, prefix=""):
+    import loralib as lora
+
+    target_module_names = set(target_module_names)
+    matched = []
+    for name, child in list(module.named_children()):
+        full_name = "%s.%s" % (prefix, name) if prefix else name
+        if isinstance(child, nn.Linear) and full_name in target_module_names:
+            replacement = lora.Linear(
+                child.in_features,
+                child.out_features,
+                r=r,
+                lora_alpha=alpha,
+                lora_dropout=dropout,
+                bias=child.bias is not None,
+            ).to(device=child.weight.device, dtype=child.weight.dtype)
+            replacement.weight.data.copy_(child.weight.data)
+            if child.bias is not None:
+                replacement.bias.data.copy_(child.bias.data)
+            replacement.train(child.training)
+            setattr(module, name, replacement)
+            matched.append(full_name)
+        else:
+            matched.extend(
+                replace_target_linear_with_lora(
+                    child,
+                    target_module_names,
+                    r=r,
+                    alpha=alpha,
+                    dropout=dropout,
+                    prefix=full_name,
+                )
+            )
+    return matched
+
+
+def summarize_lora_modules(matched_modules):
+    groups = {
+        "attention_query": [],
+        "attention_key": [],
+        "attention_value": [],
+        "attention_output": [],
+        "ffn_intermediate": [],
+        "ffn_output": [],
+        "other": [],
+    }
+    for name in matched_modules:
+        leaf = name.split(".")[-1]
+        if leaf in {"q_proj", "query"}:
+            groups["attention_query"].append(name)
+        elif leaf in {"k_proj", "key"}:
+            groups["attention_key"].append(name)
+        elif leaf in {"v_proj", "value"}:
+            groups["attention_value"].append(name)
+        elif leaf in {"out_proj"} or name.endswith(".self_attn.out_proj"):
+            groups["attention_output"].append(name)
+        elif leaf in {"fc1", "intermediate", "dense_h_to_4h"}:
+            groups["ffn_intermediate"].append(name)
+        elif leaf in {"fc2", "output", "dense_4h_to_h"}:
+            groups["ffn_output"].append(name)
+        else:
+            groups["other"].append(name)
+    return groups
+
+
+def print_lora_module_summary(lora_scope, lora_rank, lora_alpha, lora_dropout, matched_modules, total_params, trainable_params):
+    trainable_pct = 100.0 * float(trainable_params) / float(total_params) if total_params else 0.0
+    groups = summarize_lora_modules(matched_modules)
+    print("LoRA model summary:")
+    print("  lora_scope: %s" % lora_scope)
+    print("  lora_rank: %d" % lora_rank)
+    print("  lora_alpha: %d" % lora_alpha)
+    print("  lora_dropout: %.4g" % lora_dropout)
+    print("  total_parameters: %d" % total_params)
+    print("  trainable_parameters: %d" % trainable_params)
+    print("  trainable_pct: %.4f" % trainable_pct)
+    print("LoRA modules by layer type:")
+    print("  Attention:")
+    print("    query: %d" % len(groups["attention_query"]))
+    print("    key: %d" % len(groups["attention_key"]))
+    print("    value: %d" % len(groups["attention_value"]))
+    print("    output projection: %d" % len(groups["attention_output"]))
+    print("  FFN:")
+    print("    intermediate projection: %d" % len(groups["ffn_intermediate"]))
+    print("    output projection: %d" % len(groups["ffn_output"]))
+    if groups["other"]:
+        print("  Other linear: %d" % len(groups["other"]))
+    print("Exact modules receiving LoRA:")
+    for module_name in matched_modules:
+        print("  %s" % module_name)
+
+
+def sanity_check_trainable_parameters(model, matched_modules):
+    expected_lora_prefixes = tuple("backbone.plm.%s." % name for name in matched_modules)
+    unexpected_trainable = []
+    trainable_lora = []
+    frozen_lora = []
+    head_trainable = []
+    head_frozen = []
+    for name, param in model.named_parameters():
+        if name.startswith("head."):
+            if param.requires_grad:
+                head_trainable.append(name)
+            else:
+                head_frozen.append(name)
+        elif "lora_" in name:
+            if param.requires_grad:
+                trainable_lora.append(name)
+            else:
+                frozen_lora.append(name)
+        elif param.requires_grad:
+            unexpected_trainable.append(name)
+
+    missing_expected_lora = [
+        prefix for prefix in expected_lora_prefixes
+        if not any(name.startswith(prefix) and "lora_" in name for name in trainable_lora)
+    ]
+    if unexpected_trainable:
+        raise RuntimeError("unexpected base-model trainable parameters: %s" % ", ".join(unexpected_trainable[:20]))
+    if frozen_lora:
+        raise RuntimeError("LoRA parameters unexpectedly frozen: %s" % ", ".join(frozen_lora[:20]))
+    if head_frozen:
+        raise RuntimeError("prediction-head parameters unexpectedly frozen: %s" % ", ".join(head_frozen[:20]))
+    if missing_expected_lora:
+        raise RuntimeError("missing trainable LoRA adapters for modules: %s" % ", ".join(missing_expected_lora[:20]))
+    if not trainable_lora:
+        raise RuntimeError("no trainable LoRA parameters found")
+    if not head_trainable:
+        raise RuntimeError("no trainable prediction-head parameters found")
+    print("LoRA sanity check passed: base pLM frozen, LoRA adapters trainable, prediction head trainable")
+
+
+def configure_lora_parameters(model, args):
+    resolved_targets = resolve_lora_target_modules(model, args)
+    matched_modules = replace_target_linear_with_lora(
+        model,
+        resolved_targets,
+        r=args.lora_rank,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout,
+    )
+    if not matched_modules:
+        raise ValueError("no modules were replaced with LoRA for targets: %s" % ", ".join(resolved_targets))
+    for _name, param in model.named_parameters():
+        param.requires_grad = False
+    for name, param in model.named_parameters():
+        if "lora_" in name:
+            param.requires_grad = True
+    return resolved_targets, matched_modules
+
+
 def collate_batch(batch, pad_id):
     sequences, labels = zip(*batch)
     max_len = max(seq.numel() for seq in sequences)
@@ -324,18 +544,55 @@ def subset_encoded(encoded, indices):
     return [encoded[int(i)] for i in indices]
 
 
-def initialize_plm_lora_head(model_name, task_type, output_dim, device, lora_rank, lora_alpha, lora_dropout, pooling_positions):
+def supports_bf16(device):
+    return device.type == "cuda" and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
+
+def cosine_warmup_scheduler(optimizer, total_steps, warmup_ratio):
+    total_steps = max(int(total_steps), 1)
+    warmup_steps = int(total_steps * float(warmup_ratio))
+
+    def lr_lambda(current_step):
+        if warmup_steps > 0 and current_step < warmup_steps:
+            return float(current_step + 1) / float(warmup_steps)
+        decay_steps = max(total_steps - warmup_steps, 1)
+        progress = min(max(float(current_step - warmup_steps) / float(decay_steps), 0.0), 1.0)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda), warmup_steps
+
+
+def trainable_state_dict(model):
+    return {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+        if "lora_" in name or name.startswith("head.")
+    }
+
+
+def initialize_plm_lora_head(model_name, task_type, output_dim, device, args, pooling_positions):
     resolved_model_name = resolve_model_name(model_name)
     print("Model: %s" % resolved_model_name)
     plm_init(str(ROOT_DIR))
     backbone = plmEmbeddingModel(plm_name=resolved_model_name, emb_only=True, device=device).to(device)
-    configure_trainable_parameters(backbone.plm, "lora", lora_r=lora_rank, lora_alpha=lora_alpha, lora_dropout=lora_dropout)
+    _resolved_targets, matched_modules = configure_lora_parameters(backbone.plm, args)
     hidden_dim = infer_hidden_dim(backbone)
     head = MLPScorer(input_dim=int(hidden_dim), output_dim=int(output_dim), hidden_layers=[64], dropout=0.0).to(device)
+    for param in head.parameters():
+        param.requires_grad = True
     model = LoraSupervisedModel(backbone, head, pooling_positions=pooling_positions).to(device)
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
-    print("Trainable parameters: %d / %d" % (trainable_params, total_params))
+    print_lora_module_summary(
+        args.lora_scope,
+        args.lora_rank,
+        args.lora_alpha,
+        args.lora_dropout,
+        matched_modules,
+        total_params,
+        trainable_params,
+    )
+    sanity_check_trainable_parameters(model, matched_modules)
     return model, backbone
 
 
@@ -349,25 +606,68 @@ def train(model, encoded, labels, train_idx, task_type, token_ids, args, device)
     )
     if len(loader) == 0:
         raise ValueError("empty training set")
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.learning_rate)
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+    )
+    steps_per_epoch = int(math.ceil(len(loader) / float(args.gradient_accumulation_steps)))
+    total_steps = steps_per_epoch * int(args.max_epochs)
+    scheduler, warmup_steps = cosine_warmup_scheduler(optimizer, total_steps, args.warmup_ratio)
     loss_fn = nn.CrossEntropyLoss() if task_type == "classification" else nn.MSELoss()
+    use_bf16 = supports_bf16(device)
     print("Fitting LoRA...")
+    print("Optimizer steps per epoch: %d total_steps=%d warmup_steps=%d bf16=%s" % (
+        steps_per_epoch, total_steps, warmup_steps, use_bf16
+    ))
     model.train()
-    for epoch in range(1, args.epochs + 1):
+    optimizer.zero_grad(set_to_none=True)
+    best_loss = float("inf")
+    best_state = None
+    epochs_without_improvement = 0
+    global_step = 0
+    for epoch in range(1, args.max_epochs + 1):
         losses = []
-        for input_ids, attention_mask, y in loader:
+        for batch_idx, (input_ids, attention_mask, y) in enumerate(loader, start=1):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            output = model(input_ids, attention_mask=attention_mask)
-            if task_type == "classification":
-                loss = loss_fn(output, y.long().to(device))
-            else:
-                loss = loss_fn(output.reshape(-1), y.float().to(device).reshape(-1))
-            loss.backward()
-            optimizer.step()
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+                output = model(input_ids, attention_mask=attention_mask)
+                if task_type == "classification":
+                    loss = loss_fn(output, y.long().to(device))
+                else:
+                    loss = loss_fn(output.reshape(-1), y.float().to(device).reshape(-1))
+            (loss / args.gradient_accumulation_steps).backward()
             losses.append(float(loss.detach().cpu()))
-        print("Epoch %d/%d loss=%.6f" % (epoch, args.epochs, float(np.mean(losses))))
+
+            if batch_idx % args.gradient_accumulation_steps == 0 or batch_idx == len(loader):
+                if args.gradient_clip_norm is not None and args.gradient_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        [p for p in model.parameters() if p.requires_grad],
+                        float(args.gradient_clip_norm),
+                    )
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+
+        epoch_loss = float(np.mean(losses))
+        print("Epoch %d/%d loss=%.6f lr=%.6g" % (
+            epoch, args.max_epochs, epoch_loss, optimizer.param_groups[0]["lr"]
+        ))
+        if epoch_loss < best_loss - 1e-8:
+            best_loss = epoch_loss
+            best_state = trainable_state_dict(model)
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
+                print("Early stopping at epoch %d; best_loss=%.6f" % (epoch, best_loss))
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state, strict=False)
+        print("Restored best LoRA/head state from training epoch loss %.6f" % best_loss)
     return model
 
 
@@ -450,30 +750,92 @@ def save_result_incremental(row, output_path):
     print("Saved results to %s" % output_path)
 
 
+def print_run_config(args, device):
+    print("LoRA configuration:")
+    print("  lora_scope: %s" % args.lora_scope)
+    print("  lora_rank: %d" % args.lora_rank)
+    print("  lora_alpha: %d" % args.lora_alpha)
+    print("  lora_dropout: %.4g" % args.lora_dropout)
+    print("  lora_target_modules: %s" % " ".join(args.lora_target_modules))
+    print("Optimization configuration:")
+    print("  optimizer: AdamW")
+    print("  learning_rate: %.6g" % args.learning_rate)
+    print("  weight_decay: %.6g" % args.weight_decay)
+    print("  scheduler: cosine")
+    print("  warmup_ratio: %.6g" % args.warmup_ratio)
+    print("  max_epochs: %d" % args.max_epochs)
+    print("  early_stopping_patience: %d" % args.early_stopping_patience)
+    print("  gradient_clip_norm: %s" % args.gradient_clip_norm)
+    print("  batch_size: %d" % args.batch_size)
+    print("  eval_batch_size: %d" % args.eval_batch_size)
+    print("  gradient_accumulation_steps: %d" % args.gradient_accumulation_steps)
+    print("  seed: %d" % args.seed)
+    print("  device: %s" % device)
+    print("  bf16_supported: %s" % supports_bf16(device))
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--model_name", required=True)
     parser.add_argument("--train_mutations", type=int, required=True)
     parser.add_argument("--output_path", required=True)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--eval_batch_size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--learning_rate", type=float, default=1e-5)
-    parser.add_argument("--lora_rank", type=int, default=8)
-    parser.add_argument("--lora_alpha", type=int, default=16)
-    parser.add_argument("--lora_dropout", type=float, default=0.0)
+    parser.add_argument("--max_epochs", "--epochs", dest="max_epochs", type=int, default=20)
+    parser.add_argument("--early_stopping_patience", type=int, default=4)
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--warmup_ratio", type=float, default=0.05)
+    parser.add_argument("--gradient_clip_norm", type=float, default=1.0)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    parser.add_argument("--lora_rank", type=int, default=32)
+    parser.add_argument("--lora_alpha", type=int, default=64)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--lora_scope", choices=["qv", "all_linear"], default="all_linear")
+    parser.add_argument("--lora_target_modules", nargs="+", default=["query", "value"])
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--tokenized_path", default=None)
     return parser.parse_args()
 
 
+def validate_args(args):
+    if args.batch_size <= 0:
+        raise ValueError("--batch_size must be positive")
+    if args.eval_batch_size <= 0:
+        raise ValueError("--eval_batch_size must be positive")
+    if args.max_epochs <= 0:
+        raise ValueError("--max_epochs must be positive")
+    if args.early_stopping_patience < 0:
+        raise ValueError("--early_stopping_patience must be non-negative")
+    if args.learning_rate <= 0:
+        raise ValueError("--learning_rate must be positive")
+    if args.weight_decay < 0:
+        raise ValueError("--weight_decay must be non-negative")
+    if not (0 <= args.warmup_ratio < 1):
+        raise ValueError("--warmup_ratio must be in [0, 1)")
+    if args.gradient_accumulation_steps <= 0:
+        raise ValueError("--gradient_accumulation_steps must be positive")
+    if args.lora_rank <= 0:
+        raise ValueError("--lora_rank must be positive")
+    if args.lora_alpha <= 0:
+        raise ValueError("--lora_alpha must be positive")
+    if args.lora_dropout < 0:
+        raise ValueError("--lora_dropout must be non-negative")
+    if args.lora_scope == "qv" and not args.lora_target_modules:
+        raise ValueError("--lora_target_modules must contain at least one module name when --lora_scope qv")
+    if not args.lora_target_modules:
+        raise ValueError("--lora_target_modules must contain at least one module name")
+
+
 def main():
     args = parse_args()
+    validate_args(args)
     set_seed(args.seed)
     device = resolve_device(args.device)
     print("Using device: %s" % device)
+    print_run_config(args, device)
     spec, df, labels, nmuts = load_prepare_dataset(args.dataset)
     train_idx, test_orders = build_controlled_indices(nmuts, args.train_mutations)
     print("Training orders: <= %d" % int(args.train_mutations))
@@ -490,9 +852,7 @@ def main():
         spec.task_type,
         output_dim,
         device,
-        args.lora_rank,
-        args.lora_alpha,
-        args.lora_dropout,
+        args,
         pooling_positions,
     )
     token_ids = resolve_token_ids(backbone.tokenizer)
