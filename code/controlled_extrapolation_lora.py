@@ -812,13 +812,13 @@ def train_one_model(model, encoded, labels, train_idx, task_type, token_ids, arg
         yield epoch, epoch_loss, optimizer.param_groups[0]["lr"]
 
 
-def select_epoch_by_extrapolative_validation(model, encoded, labels, train_idx, val_idx, task_type, token_ids, args, device):
+def train_with_extrapolative_validation(model, encoded, labels, train_idx, val_idx, task_type, token_ids, args, device):
     metric_name = primary_validation_metric(task_type)
-    print("STAGE 1: extrapolative validation / epoch selection")
-    print("  stage train mutation orders: 1..%d" % (int(args.train_mutations) - 1))
-    print("  stage validation mutation order: %d" % int(args.train_mutations))
-    print("  N stage train: %d" % len(train_idx))
-    print("  N stage validation: %d" % len(val_idx))
+    print("Fitting LoRA with extrapolative validation...")
+    print("  training orders: <= %d" % int(args.train_mutations))
+    print("  validation order: %d fixed random 20%% subset" % (int(args.train_mutations) + 1))
+    print("  N train: %d" % len(train_idx))
+    print("  N validation: %d" % len(val_idx))
     best = {
         "epoch": None,
         "validation_metric": np.nan,
@@ -838,14 +838,14 @@ def select_epoch_by_extrapolative_validation(model, encoded, labels, train_idx, 
         device,
         num_epochs=args.max_epochs,
         scheduler_epochs=args.max_epochs,
-        log_prefix="Stage 1",
+        log_prefix="Training",
     ):
         train_eval = evaluate_split(model, encoded, labels, train_idx, task_type, token_ids, args.eval_batch_size, device)
         val_eval = evaluate_split(model, encoded, labels, val_idx, task_type, token_ids, args.eval_batch_size, device)
         train_metric = train_eval["metrics"][metric_name]
         val_metric = val_eval["metrics"][metric_name]
         print(
-            "Stage 1 epoch %d/%d train_loss=%.6f train_%s=%s val_loss=%.6f val_%s=%s lr=%.6g" % (
+            "Epoch %d/%d train_loss=%.6f train_%s=%s val_loss=%.6f val_%s=%s lr=%.6g" % (
                 epoch,
                 args.max_epochs,
                 train_loss,
@@ -872,7 +872,7 @@ def select_epoch_by_extrapolative_validation(model, encoded, labels, train_idx, 
             epochs_without_improvement += 1
             if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
                 print(
-                    "Stage 1 early stopping at epoch %d; best_epoch=%s best_validation_%s=%s" % (
+                    "Early stopping at epoch %d; best_epoch=%s best_validation_%s=%s" % (
                         epoch,
                         best["epoch"],
                         metric_name,
@@ -882,34 +882,14 @@ def select_epoch_by_extrapolative_validation(model, encoded, labels, train_idx, 
                 break
     if best["epoch"] is None:
         raise RuntimeError("could not select a validation epoch; validation metric was NaN for every epoch")
-    print("Stage 1 selected epoch:")
+    model.load_state_dict(best["state"], strict=False)
+    print("Restored best LoRA/head state selected by validation %s" % metric_name)
+    print("Selected checkpoint:")
     print("  best_validation_epoch: %d" % best["epoch"])
     print("  best_validation_%s: %s" % (metric_name, best["validation_metric"]))
     print("  training_%s_at_best_epoch: %s" % (metric_name, best["train_metric"]))
     print("  validation_loss_at_best_epoch: %.6f" % best["validation_loss"])
-    return best
-
-
-def train_final_fixed_epochs(model, encoded, labels, train_idx, task_type, token_ids, args, device, selected_epochs):
-    print("STAGE 2: final controlled-extrapolation model")
-    print("  final training orders: <= %d" % int(args.train_mutations))
-    print("  N final train: %d" % len(train_idx))
-    print("  training exactly selected epochs: %d" % int(selected_epochs))
-    for epoch, train_loss, lr in train_one_model(
-        model,
-        encoded,
-        labels,
-        train_idx,
-        task_type,
-        token_ids,
-        args,
-        device,
-        num_epochs=int(selected_epochs),
-        scheduler_epochs=args.max_epochs,
-        log_prefix="Stage 2",
-    ):
-        print("Stage 2 epoch %d/%d train_loss=%.6f lr=%.6g" % (epoch, int(selected_epochs), train_loss, lr))
-    return model
+    return model, best
 
 
 @torch.no_grad()
@@ -917,8 +897,11 @@ def predict(model, encoded, labels, indices, task_type, token_ids, eval_batch_si
     return evaluate_split(model, encoded, labels, indices, task_type, token_ids, eval_batch_size, device)["predictions"]
 
 
-def evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device):
-    test_idx = np.where(nmuts == int(test_order))[0]
+def evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device, test_idx=None, split_name=None):
+    if test_idx is None:
+        test_idx = np.where(nmuts == int(test_order))[0]
+    else:
+        test_idx = np.asarray(test_idx, dtype=int)
     print("Evaluating mutation order %d, N=%d" % (int(test_order), len(test_idx)))
     if len(test_idx) == 0:
         return None, None, None
@@ -927,11 +910,12 @@ def evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, to
     y_pred = split_eval["predictions"]
     if spec.task_type == "classification" and len(np.unique(y_true)) < 2:
         print("[WARNING] Mutation order %d contains only one class; ROC AUC is NA" % int(test_order))
-    metrics, scores = summarize_split_predictions("test_order_%d" % int(test_order), y_true, y_pred, spec.task_type)
+    split_name = split_name or "test_order_%d" % int(test_order)
+    metrics, scores = summarize_split_predictions(split_name, y_true, y_pred, spec.task_type)
     pred_df = prediction_dataframe(
         spec,
         args,
-        split="test_order_%d" % int(test_order),
+        split=split_name,
         mutation_order=int(test_order),
         indices=test_idx,
         targets=y_true,
@@ -1026,27 +1010,30 @@ def save_predictions_incremental(prediction_frames, output_path):
     print("Saved predictions to %s" % output_path)
 
 
-def print_final_diagnosis(task_type, stage_best, final_train_metrics, test_metrics, train_pred_std, test_pred_stds, train_mutations):
+def print_final_diagnosis(task_type, best_checkpoint, final_train_metrics, validation_metrics, test_metrics, train_pred_std, validation_pred_std, test_pred_stds, train_mutations):
     metric_name = primary_validation_metric(task_type)
     final_train_metric = final_train_metrics.get(metric_name, np.nan)
+    validation_metric = validation_metrics.get(metric_name, np.nan)
     test_values = [metrics.get(metric_name, np.nan) for metrics in test_metrics if metrics is not None]
     finite_tests = [float(value) for value in test_values if not np.isnan(value)]
     mean_test = float(np.mean(finite_tests)) if finite_tests else np.nan
-    collapse_stds = [std for std in [train_pred_std] + list(test_pred_stds) if not np.isnan(std)]
+    collapse_stds = [std for std in [train_pred_std, validation_pred_std] + list(test_pred_stds) if not np.isnan(std)]
     collapsed = bool(collapse_stds) and max(collapse_stds) < 1e-6
     print("Diagnostic summary:")
-    print("  Stage 1 best validation %s: %s" % (metric_name, stage_best["validation_metric"]))
+    print("  Best validation epoch: %s" % best_checkpoint["epoch"])
+    print("  Best validation %s: %s" % (metric_name, best_checkpoint["validation_metric"]))
     print("  Final training %s: %s" % (metric_name, final_train_metric))
+    print("  Validation %s after restore: %s" % (metric_name, validation_metric))
     print("  Mean held-out test %s: %s" % (metric_name, mean_test))
     print("  A. LoRA does not fit the low-order training data: %s" % (bool(not np.isnan(final_train_metric) and final_train_metric < 0.2)))
     print("  B. LoRA fits training and order-%d validation but fails at orders >=%d: %s" % (
-        int(train_mutations),
+        int(train_mutations) + 1,
         int(train_mutations) + 1,
         bool(
             not np.isnan(final_train_metric)
-            and not np.isnan(stage_best["validation_metric"])
+            and not np.isnan(best_checkpoint["validation_metric"])
             and final_train_metric >= 0.2
-            and stage_best["validation_metric"] >= 0.2
+            and best_checkpoint["validation_metric"] >= 0.2
             and (np.isnan(mean_test) or mean_test < 0.2)
         ),
     ))
@@ -1055,8 +1042,8 @@ def print_final_diagnosis(task_type, stage_best, final_train_metrics, test_metri
     print("  E. LoRA genuinely performs poorly under controlled extrapolation: %s" % (
         bool(
             not collapsed
-            and not np.isnan(stage_best["validation_metric"])
-            and stage_best["validation_metric"] >= 0.2
+            and not np.isnan(best_checkpoint["validation_metric"])
+            and best_checkpoint["validation_metric"] >= 0.2
             and (np.isnan(mean_test) or mean_test < 0.2)
         )
     ))
@@ -1093,15 +1080,19 @@ def initialize_plain_backbone_for_tokenization(model_name, device):
     return plmEmbeddingModel(plm_name=resolved_model_name, emb_only=True, device=device).to(device)
 
 
-def build_extrapolative_validation_indices(nmuts, train_mutations):
+def build_extrapolative_validation_indices(nmuts, train_mutations, seed):
     train_mutations = int(train_mutations)
-    stage_train_idx = np.where((nmuts > 0) & (nmuts < train_mutations))[0]
-    stage_val_idx = np.where(nmuts == train_mutations)[0]
-    if len(stage_train_idx) == 0:
-        raise ValueError("empty extrapolative validation training set; expected variants with 0 < num_mutations < %d" % train_mutations)
-    if len(stage_val_idx) == 0:
-        raise ValueError("empty extrapolative validation set; expected variants with num_mutations == %d" % train_mutations)
-    return stage_train_idx, stage_val_idx
+    validation_order = train_mutations + 1
+    validation_order_idx = np.where(nmuts == validation_order)[0]
+    if len(validation_order_idx) < 2:
+        raise ValueError("need at least two variants with num_mutations == %d for the 20%% validation split" % validation_order)
+    rng = np.random.default_rng(int(seed))
+    shuffled = rng.permutation(validation_order_idx)
+    n_validation = int(round(0.2 * len(shuffled)))
+    n_validation = min(max(n_validation, 1), len(shuffled) - 1)
+    validation_idx = np.sort(shuffled[:n_validation])
+    validation_order_test_idx = np.sort(shuffled[n_validation:])
+    return validation_idx, validation_order_test_idx
 
 
 def parse_args():
@@ -1170,7 +1161,7 @@ def main():
     train_idx, test_orders = build_controlled_indices(nmuts, args.train_mutations)
     print("Training orders: <= %d" % int(args.train_mutations))
     print("N train: %d" % len(train_idx))
-    print("Held-out orders: %s" % (", ".join(map(str, test_orders)) if test_orders else "<none>"))
+    print("Evaluation orders: %s" % (", ".join(map(str, test_orders)) if test_orders else "<none>"))
 
     pooling_positions = infer_pooling_positions(df, spec)
     if pooling_positions is not None:
@@ -1185,35 +1176,15 @@ def main():
             torch.cuda.empty_cache()
 
     output_dim = int(np.max(labels)) + 1 if spec.task_type == "classification" else 1
-    stage_train_idx, stage_val_idx = build_extrapolative_validation_indices(nmuts, args.train_mutations)
-
-    set_seed(args.seed)
-    stage_model, stage_backbone, stage_token_ids, _stage_matched_modules = initialize_plm_lora_head(
-        args.model_name,
-        spec.task_type,
-        output_dim,
-        device,
-        args,
-        pooling_positions,
-        encoded=encoded,
-        labels=labels,
-        diagnostic_indices=stage_train_idx,
-        report_init_equivalence=True,
-    )
-    stage_best = select_epoch_by_extrapolative_validation(
-        stage_model,
-        encoded,
-        labels,
-        stage_train_idx,
-        stage_val_idx,
-        spec.task_type,
-        stage_token_ids,
-        args,
-        device,
-    )
-    del stage_model, stage_backbone
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    validation_order = int(args.train_mutations) + 1
+    validation_idx, validation_order_test_idx = build_extrapolative_validation_indices(nmuts, args.train_mutations, args.seed)
+    print("Extrapolative validation split:")
+    print("  validation order: %d" % validation_order)
+    print("  validation fraction: 0.2")
+    print("  split seed: %d" % int(args.seed))
+    print("  N validation order total: %d" % int(len(validation_idx) + len(validation_order_test_idx)))
+    print("  N validation subset: %d" % len(validation_idx))
+    print("  N held-out validation-order test subset: %d" % len(validation_order_test_idx))
 
     set_seed(args.seed)
     model, backbone, token_ids, _matched_modules = initialize_plm_lora_head(
@@ -1228,16 +1199,16 @@ def main():
         diagnostic_indices=train_idx,
         report_init_equivalence=True,
     )
-    model = train_final_fixed_epochs(
+    model, best_checkpoint = train_with_extrapolative_validation(
         model,
         encoded,
         labels,
         train_idx,
+        validation_idx,
         spec.task_type,
         token_ids,
         args,
         device,
-        selected_epochs=stage_best["epoch"],
     )
 
     prediction_frames = []
@@ -1262,10 +1233,44 @@ def main():
             prediction_scores=final_train_scores,
         )
     )
+    validation_eval = evaluate_split(model, encoded, labels, validation_idx, spec.task_type, token_ids, args.eval_batch_size, device)
+    validation_metrics, validation_scores = summarize_split_predictions(
+        "validation_order_%d" % validation_order,
+        labels[validation_idx],
+        validation_eval["predictions"],
+        spec.task_type,
+    )
+    validation_pred_std = float(np.std(validation_scores)) if len(validation_scores) else np.nan
+    prediction_frames.append(
+        prediction_dataframe(
+            spec,
+            args,
+            split="validation_order_%d" % validation_order,
+            mutation_order=validation_order,
+            indices=validation_idx,
+            targets=labels[validation_idx],
+            prediction_scores=validation_scores,
+        )
+    )
     save_predictions_incremental(prediction_frames, args.output_path)
 
     for test_order in test_orders:
-        row, pred_df, metrics = evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device)
+        if int(test_order) == validation_order:
+            row, pred_df, metrics = evaluate_one_order(
+                model,
+                encoded,
+                labels,
+                nmuts,
+                test_order,
+                spec,
+                args,
+                token_ids,
+                device,
+                test_idx=validation_order_test_idx,
+                split_name="test_order_%d_heldout" % int(test_order),
+            )
+        else:
+            row, pred_df, metrics = evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device)
         if row is not None:
             save_result_incremental(row, args.output_path)
         if pred_df is not None:
@@ -1276,10 +1281,12 @@ def main():
         save_predictions_incremental(prediction_frames, args.output_path)
     print_final_diagnosis(
         spec.task_type,
-        stage_best,
+        best_checkpoint,
         final_train_metrics,
+        validation_metrics,
         test_metrics,
         final_train_pred_std,
+        validation_pred_std,
         test_pred_stds,
         args.train_mutations,
     )
