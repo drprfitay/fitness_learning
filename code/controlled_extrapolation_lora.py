@@ -46,6 +46,17 @@ RESULT_COLUMNS = [
     "correlation",
 ]
 
+PREDICTION_COLUMNS = [
+    "dataset",
+    "model_name",
+    "train_mutations",
+    "split",
+    "mutation_order",
+    "row_index",
+    "target",
+    "prediction",
+]
+
 MODEL_ALIASES = {
     "esm_8m": "esm2_t6_8M_UR50D",
     "esm8m": "esm2_t6_8M_UR50D",
@@ -570,12 +581,79 @@ def trainable_state_dict(model):
     }
 
 
-def initialize_plm_lora_head(model_name, task_type, output_dim, device, args, pooling_positions):
+def initialization_equivalence_batch(encoded, indices, labels, token_ids, max_examples):
+    indices = np.asarray(indices, dtype=int)
+    if len(indices) == 0:
+        return None
+    indices = indices[: int(max_examples)]
+    dataset = SequenceDataset(subset_encoded(encoded, indices), labels[indices])
+    return collate_batch([dataset[i] for i in range(len(dataset))], int(token_ids["pad"]))
+
+
+@torch.no_grad()
+def check_lora_initialization_equivalence(backbone, encoded, labels, indices, token_ids, device, max_examples):
+    batch = initialization_equivalence_batch(encoded, indices, labels, token_ids, max_examples)
+    if batch is None:
+        print("[WARNING] Skipping LoRA initialization equivalence check because no examples were available")
+        return None
+    was_training = backbone.training
+    backbone.eval()
+    input_ids, attention_mask, _y = batch
+    input_ids = input_ids.to(device)
+    attention_mask = attention_mask.to(device)
+    before = backbone(input_ids, attention_mask=attention_mask).detach().float().cpu()
+    if was_training:
+        backbone.train()
+    return input_ids, attention_mask, before, was_training
+
+
+@torch.no_grad()
+def finish_lora_initialization_equivalence(backbone, equivalence_state):
+    if equivalence_state is None:
+        return
+    input_ids, attention_mask, before, was_training = equivalence_state
+    backbone.eval()
+    after = backbone(input_ids, attention_mask=attention_mask).detach().float().cpu()
+    diff = (before - after).abs()
+    print("LoRA initialization equivalence check:")
+    print("  max_absolute_difference: %.8g" % float(diff.max().item()))
+    print("  mean_absolute_difference: %.8g" % float(diff.mean().item()))
+    if was_training:
+        backbone.train()
+
+
+def initialize_plm_lora_head(
+    model_name,
+    task_type,
+    output_dim,
+    device,
+    args,
+    pooling_positions,
+    encoded=None,
+    labels=None,
+    diagnostic_indices=None,
+    report_init_equivalence=False,
+):
     resolved_model_name = resolve_model_name(model_name)
     print("Model: %s" % resolved_model_name)
     plm_init(str(ROOT_DIR))
     backbone = plmEmbeddingModel(plm_name=resolved_model_name, emb_only=True, device=device).to(device)
+    token_ids = resolve_token_ids(backbone.tokenizer)
+    if token_ids["pad"] is None:
+        token_ids["pad"] = 0
+    equivalence_state = None
+    if report_init_equivalence and encoded is not None and labels is not None and diagnostic_indices is not None:
+        equivalence_state = check_lora_initialization_equivalence(
+            backbone,
+            encoded,
+            labels,
+            diagnostic_indices,
+            token_ids,
+            device,
+            max_examples=min(args.eval_batch_size, 8),
+        )
     _resolved_targets, matched_modules = configure_lora_parameters(backbone.plm, args)
+    finish_lora_initialization_equivalence(backbone, equivalence_state)
     hidden_dim = infer_hidden_dim(backbone)
     head = MLPScorer(input_dim=int(hidden_dim), output_dim=int(output_dim), hidden_layers=[64], dropout=0.0).to(device)
     for param in head.parameters():
@@ -593,10 +671,89 @@ def initialize_plm_lora_head(model_name, task_type, output_dim, device, args, po
         trainable_params,
     )
     sanity_check_trainable_parameters(model, matched_modules)
-    return model, backbone
+    return model, backbone, token_ids, matched_modules
 
 
-def train(model, encoded, labels, train_idx, task_type, token_ids, args, device):
+def loss_for_output(output, y, task_type, loss_fn, device):
+    if task_type == "classification":
+        return loss_fn(output, y.long().to(device))
+    return loss_fn(output.reshape(-1), y.float().to(device).reshape(-1))
+
+
+def make_loader(encoded, labels, indices, batch_size, token_ids, shuffle):
+    dataset = SequenceDataset(subset_encoded(encoded, indices), labels[indices])
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=lambda batch: collate_batch(batch, int(token_ids["pad"])),
+    )
+
+
+def prediction_scores_for_stats(predictions, task_type):
+    predictions = np.asarray(predictions)
+    if task_type == "classification":
+        if predictions.ndim == 2 and predictions.shape[1] >= 2:
+            return predictions[:, 1]
+        return predictions.reshape(-1)
+    return predictions.reshape(-1)
+
+
+def summarize_split_predictions(split_name, y_true, y_pred, task_type):
+    scores = prediction_scores_for_stats(y_pred, task_type)
+    metrics = evaluate_predictions(y_true, y_pred, task_type, precision_k=100)
+    spearman = metrics["spearman"]
+    print(
+        "%s diagnostics: target_mean=%.6g target_std=%.6g prediction_mean=%.6g prediction_std=%.6g spearman=%s" % (
+            split_name,
+            float(np.mean(y_true)) if len(y_true) else float("nan"),
+            float(np.std(y_true)) if len(y_true) else float("nan"),
+            float(np.mean(scores)) if len(scores) else float("nan"),
+            float(np.std(scores)) if len(scores) else float("nan"),
+            spearman,
+        )
+    )
+    return metrics, scores
+
+
+@torch.no_grad()
+def evaluate_split(model, encoded, labels, indices, task_type, token_ids, eval_batch_size, device):
+    indices = np.asarray(indices, dtype=int)
+    if len(indices) == 0:
+        return {"loss": np.nan, "predictions": np.asarray([]), "metrics": evaluate_predictions([], [], task_type)}
+    loader = make_loader(encoded, labels, indices, eval_batch_size, token_ids, shuffle=False)
+    loss_fn = nn.CrossEntropyLoss() if task_type == "classification" else nn.MSELoss()
+    losses = []
+    predictions = []
+    model.eval()
+    for input_ids, attention_mask, y in loader:
+        input_ids = input_ids.to(device)
+        attention_mask = attention_mask.to(device)
+        output = model(input_ids, attention_mask=attention_mask)
+        loss = loss_for_output(output, y, task_type, loss_fn, device)
+        losses.append(float(loss.detach().cpu()))
+        if task_type == "classification":
+            predictions.append(torch.softmax(output, dim=1).detach().cpu().numpy())
+        else:
+            predictions.append(output.reshape(-1).detach().cpu().numpy())
+    y_pred = np.concatenate(predictions, axis=0) if predictions else np.asarray([])
+    metrics = evaluate_predictions(labels[indices], y_pred, task_type, precision_k=100)
+    return {"loss": float(np.mean(losses)) if losses else np.nan, "predictions": y_pred, "metrics": metrics}
+
+
+def primary_validation_metric(task_type):
+    return "spearman" if task_type == "regression" else "roc_auc"
+
+
+def metric_is_better(value, best_value):
+    if np.isnan(value):
+        return False
+    if best_value is None or np.isnan(best_value):
+        return True
+    return float(value) > float(best_value)
+
+
+def train_one_model(model, encoded, labels, train_idx, task_type, token_ids, args, device, num_epochs, scheduler_epochs, log_prefix):
     train_dataset = SequenceDataset(subset_encoded(encoded, train_idx), labels[train_idx])
     loader = DataLoader(
         train_dataset,
@@ -612,31 +769,24 @@ def train(model, encoded, labels, train_idx, task_type, token_ids, args, device)
         weight_decay=args.weight_decay,
     )
     steps_per_epoch = int(math.ceil(len(loader) / float(args.gradient_accumulation_steps)))
-    total_steps = steps_per_epoch * int(args.max_epochs)
+    total_steps = steps_per_epoch * int(scheduler_epochs)
     scheduler, warmup_steps = cosine_warmup_scheduler(optimizer, total_steps, args.warmup_ratio)
     loss_fn = nn.CrossEntropyLoss() if task_type == "classification" else nn.MSELoss()
     use_bf16 = supports_bf16(device)
-    print("Fitting LoRA...")
-    print("Optimizer steps per epoch: %d total_steps=%d warmup_steps=%d bf16=%s" % (
-        steps_per_epoch, total_steps, warmup_steps, use_bf16
+    print("%s optimizer steps per epoch: %d total_steps=%d warmup_steps=%d bf16=%s" % (
+        log_prefix, steps_per_epoch, total_steps, warmup_steps, use_bf16
     ))
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    best_loss = float("inf")
-    best_state = None
-    epochs_without_improvement = 0
-    global_step = 0
-    for epoch in range(1, args.max_epochs + 1):
+    for epoch in range(1, int(num_epochs) + 1):
+        model.train()
         losses = []
         for batch_idx, (input_ids, attention_mask, y) in enumerate(loader, start=1):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
                 output = model(input_ids, attention_mask=attention_mask)
-                if task_type == "classification":
-                    loss = loss_fn(output, y.long().to(device))
-                else:
-                    loss = loss_fn(output.reshape(-1), y.float().to(device).reshape(-1))
+                loss = loss_for_output(output, y, task_type, loss_fn, device)
             (loss / args.gradient_accumulation_steps).backward()
             losses.append(float(loss.detach().cpu()))
 
@@ -649,62 +799,136 @@ def train(model, encoded, labels, train_idx, task_type, token_ids, args, device)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                global_step += 1
 
-        epoch_loss = float(np.mean(losses))
-        print("Epoch %d/%d loss=%.6f lr=%.6g" % (
-            epoch, args.max_epochs, epoch_loss, optimizer.param_groups[0]["lr"]
-        ))
-        if epoch_loss < best_loss - 1e-8:
-            best_loss = epoch_loss
-            best_state = trainable_state_dict(model)
+        epoch_loss = float(np.mean(losses)) if losses else np.nan
+        yield epoch, epoch_loss, optimizer.param_groups[0]["lr"]
+
+
+def select_epoch_by_extrapolative_validation(model, encoded, labels, train_idx, val_idx, task_type, token_ids, args, device):
+    metric_name = primary_validation_metric(task_type)
+    print("STAGE 1: extrapolative validation / epoch selection")
+    print("  stage train mutation orders: 1..%d" % (int(args.train_mutations) - 1))
+    print("  stage validation mutation order: %d" % int(args.train_mutations))
+    print("  N stage train: %d" % len(train_idx))
+    print("  N stage validation: %d" % len(val_idx))
+    best = {
+        "epoch": None,
+        "validation_metric": np.nan,
+        "validation_loss": np.nan,
+        "train_metric": np.nan,
+        "state": None,
+    }
+    epochs_without_improvement = 0
+    for epoch, train_loss, lr in train_one_model(
+        model,
+        encoded,
+        labels,
+        train_idx,
+        task_type,
+        token_ids,
+        args,
+        device,
+        num_epochs=args.max_epochs,
+        scheduler_epochs=args.max_epochs,
+        log_prefix="Stage 1",
+    ):
+        train_eval = evaluate_split(model, encoded, labels, train_idx, task_type, token_ids, args.eval_batch_size, device)
+        val_eval = evaluate_split(model, encoded, labels, val_idx, task_type, token_ids, args.eval_batch_size, device)
+        train_metric = train_eval["metrics"][metric_name]
+        val_metric = val_eval["metrics"][metric_name]
+        print(
+            "Stage 1 epoch %d/%d train_loss=%.6f train_%s=%s val_loss=%.6f val_%s=%s lr=%.6g" % (
+                epoch,
+                args.max_epochs,
+                train_loss,
+                metric_name,
+                train_metric,
+                val_eval["loss"],
+                metric_name,
+                val_metric,
+                lr,
+            )
+        )
+        if metric_is_better(val_metric, best["validation_metric"]):
+            best.update(
+                {
+                    "epoch": int(epoch),
+                    "validation_metric": float(val_metric),
+                    "validation_loss": float(val_eval["loss"]),
+                    "train_metric": float(train_metric),
+                    "state": trainable_state_dict(model),
+                }
+            )
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
             if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
-                print("Early stopping at epoch %d; best_loss=%.6f" % (epoch, best_loss))
+                print(
+                    "Stage 1 early stopping at epoch %d; best_epoch=%s best_validation_%s=%s" % (
+                        epoch,
+                        best["epoch"],
+                        metric_name,
+                        best["validation_metric"],
+                    )
+                )
                 break
+    if best["epoch"] is None:
+        raise RuntimeError("could not select a validation epoch; validation metric was NaN for every epoch")
+    print("Stage 1 selected epoch:")
+    print("  best_validation_epoch: %d" % best["epoch"])
+    print("  best_validation_%s: %s" % (metric_name, best["validation_metric"]))
+    print("  training_%s_at_best_epoch: %s" % (metric_name, best["train_metric"]))
+    print("  validation_loss_at_best_epoch: %.6f" % best["validation_loss"])
+    return best
 
-    if best_state is not None:
-        model.load_state_dict(best_state, strict=False)
-        print("Restored best LoRA/head state from training epoch loss %.6f" % best_loss)
+
+def train_final_fixed_epochs(model, encoded, labels, train_idx, task_type, token_ids, args, device, selected_epochs):
+    print("STAGE 2: final controlled-extrapolation model")
+    print("  final training orders: <= %d" % int(args.train_mutations))
+    print("  N final train: %d" % len(train_idx))
+    print("  training exactly selected epochs: %d" % int(selected_epochs))
+    for epoch, train_loss, lr in train_one_model(
+        model,
+        encoded,
+        labels,
+        train_idx,
+        task_type,
+        token_ids,
+        args,
+        device,
+        num_epochs=int(selected_epochs),
+        scheduler_epochs=args.max_epochs,
+        log_prefix="Stage 2",
+    ):
+        print("Stage 2 epoch %d/%d train_loss=%.6f lr=%.6g" % (epoch, int(selected_epochs), train_loss, lr))
     return model
 
 
 @torch.no_grad()
 def predict(model, encoded, labels, indices, task_type, token_ids, eval_batch_size, device):
-    dataset = SequenceDataset(subset_encoded(encoded, indices), labels[indices])
-    loader = DataLoader(
-        dataset,
-        batch_size=eval_batch_size,
-        shuffle=False,
-        collate_fn=lambda batch: collate_batch(batch, int(token_ids["pad"])),
-    )
-    predictions = []
-    model.eval()
-    for input_ids, attention_mask, _y in loader:
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
-        output = model(input_ids, attention_mask=attention_mask)
-        if task_type == "classification":
-            predictions.append(torch.softmax(output, dim=1).detach().cpu().numpy())
-        else:
-            predictions.append(output.reshape(-1).detach().cpu().numpy())
-    if not predictions:
-        return np.asarray([])
-    return np.concatenate(predictions, axis=0)
+    return evaluate_split(model, encoded, labels, indices, task_type, token_ids, eval_batch_size, device)["predictions"]
 
 
 def evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device):
     test_idx = np.where(nmuts == int(test_order))[0]
     print("Evaluating mutation order %d, N=%d" % (int(test_order), len(test_idx)))
     if len(test_idx) == 0:
-        return None
+        return None, None, None
     y_true = labels[test_idx]
-    y_pred = predict(model, encoded, labels, test_idx, spec.task_type, token_ids, args.eval_batch_size, device)
+    split_eval = evaluate_split(model, encoded, labels, test_idx, spec.task_type, token_ids, args.eval_batch_size, device)
+    y_pred = split_eval["predictions"]
     if spec.task_type == "classification" and len(np.unique(y_true)) < 2:
         print("[WARNING] Mutation order %d contains only one class; ROC AUC is NA" % int(test_order))
-    metrics = evaluate_predictions(y_true, y_pred, spec.task_type, precision_k=100)
+    metrics, scores = summarize_split_predictions("test_order_%d" % int(test_order), y_true, y_pred, spec.task_type)
+    pred_df = prediction_dataframe(
+        spec,
+        args,
+        split="test_order_%d" % int(test_order),
+        mutation_order=int(test_order),
+        indices=test_idx,
+        targets=y_true,
+        prediction_scores=scores,
+    )
     if spec.task_type == "classification":
         print("ROC AUC: %s" % metrics["roc_auc"])
         return {
@@ -716,7 +940,7 @@ def evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, to
             "dataset": spec.name,
             "model_name": args.model_name,
             "correlation": np.nan,
-        }
+        }, pred_df, metrics
     print("Spearman correlation: %s" % metrics["spearman"])
     return {
         "roc": np.nan,
@@ -727,7 +951,23 @@ def evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, to
         "dataset": spec.name,
         "model_name": args.model_name,
         "correlation": metrics["spearman"],
-    }
+    }, pred_df, metrics
+
+
+def prediction_dataframe(spec, args, split, mutation_order, indices, targets, prediction_scores):
+    return pd.DataFrame(
+        {
+            "dataset": spec.name,
+            "model_name": args.model_name,
+            "train_mutations": int(args.train_mutations),
+            "split": split,
+            "mutation_order": mutation_order,
+            "row_index": np.asarray(indices, dtype=int),
+            "target": np.asarray(targets).reshape(-1),
+            "prediction": np.asarray(prediction_scores).reshape(-1),
+        },
+        columns=PREDICTION_COLUMNS,
+    )
 
 
 def save_result_incremental(row, output_path):
@@ -748,6 +988,70 @@ def save_result_incremental(row, output_path):
     )
     out_df.to_csv(output_path, index=False, columns=RESULT_COLUMNS)
     print("Saved results to %s" % output_path)
+
+
+def predictions_output_path(output_path):
+    output_path = Path(output_path)
+    return output_path.with_name("%s_predictions%s" % (output_path.stem, output_path.suffix or ".csv"))
+
+
+def save_predictions_incremental(prediction_frames, output_path):
+    prediction_frames = [frame for frame in prediction_frames if frame is not None and len(frame) > 0]
+    if not prediction_frames:
+        return
+    output_path = predictions_output_path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    new_df = pd.concat(prediction_frames, ignore_index=True)
+    if output_path.exists():
+        old_df = pd.read_csv(output_path)
+        for column in PREDICTION_COLUMNS:
+            if column not in old_df.columns:
+                old_df[column] = np.nan
+        out_df = pd.concat([old_df[PREDICTION_COLUMNS], new_df[PREDICTION_COLUMNS]], ignore_index=True)
+    else:
+        out_df = new_df[PREDICTION_COLUMNS]
+    out_df = out_df.drop_duplicates(
+        subset=["dataset", "model_name", "train_mutations", "split", "mutation_order", "row_index"],
+        keep="last",
+    )
+    out_df.to_csv(output_path, index=False, columns=PREDICTION_COLUMNS)
+    print("Saved predictions to %s" % output_path)
+
+
+def print_final_diagnosis(task_type, stage_best, final_train_metrics, test_metrics, train_pred_std, test_pred_stds, train_mutations):
+    metric_name = primary_validation_metric(task_type)
+    final_train_metric = final_train_metrics.get(metric_name, np.nan)
+    test_values = [metrics.get(metric_name, np.nan) for metrics in test_metrics if metrics is not None]
+    finite_tests = [float(value) for value in test_values if not np.isnan(value)]
+    mean_test = float(np.mean(finite_tests)) if finite_tests else np.nan
+    collapse_stds = [std for std in [train_pred_std] + list(test_pred_stds) if not np.isnan(std)]
+    collapsed = bool(collapse_stds) and max(collapse_stds) < 1e-6
+    print("Diagnostic summary:")
+    print("  Stage 1 best validation %s: %s" % (metric_name, stage_best["validation_metric"]))
+    print("  Final training %s: %s" % (metric_name, final_train_metric))
+    print("  Mean held-out test %s: %s" % (metric_name, mean_test))
+    print("  A. LoRA does not fit the low-order training data: %s" % (bool(not np.isnan(final_train_metric) and final_train_metric < 0.2)))
+    print("  B. LoRA fits training and order-%d validation but fails at orders >=%d: %s" % (
+        int(train_mutations),
+        int(train_mutations) + 1,
+        bool(
+            not np.isnan(final_train_metric)
+            and not np.isnan(stage_best["validation_metric"])
+            and final_train_metric >= 0.2
+            and stage_best["validation_metric"] >= 0.2
+            and (np.isnan(mean_test) or mean_test < 0.2)
+        ),
+    ))
+    print("  C. predictions collapse: %s" % collapsed)
+    print("  D. apparent implementation problem from sanity checks: False")
+    print("  E. LoRA genuinely performs poorly under controlled extrapolation: %s" % (
+        bool(
+            not collapsed
+            and not np.isnan(stage_best["validation_metric"])
+            and stage_best["validation_metric"] >= 0.2
+            and (np.isnan(mean_test) or mean_test < 0.2)
+        )
+    ))
 
 
 def print_run_config(args, device):
@@ -772,6 +1076,24 @@ def print_run_config(args, device):
     print("  seed: %d" % args.seed)
     print("  device: %s" % device)
     print("  bf16_supported: %s" % supports_bf16(device))
+
+
+def initialize_plain_backbone_for_tokenization(model_name, device):
+    resolved_model_name = resolve_model_name(model_name)
+    print("Model for tokenization: %s" % resolved_model_name)
+    plm_init(str(ROOT_DIR))
+    return plmEmbeddingModel(plm_name=resolved_model_name, emb_only=True, device=device).to(device)
+
+
+def build_extrapolative_validation_indices(nmuts, train_mutations):
+    train_mutations = int(train_mutations)
+    stage_train_idx = np.where((nmuts > 0) & (nmuts < train_mutations))[0]
+    stage_val_idx = np.where(nmuts == train_mutations)[0]
+    if len(stage_train_idx) == 0:
+        raise ValueError("empty extrapolative validation training set; expected variants with 0 < num_mutations < %d" % train_mutations)
+    if len(stage_val_idx) == 0:
+        raise ValueError("empty extrapolative validation set; expected variants with num_mutations == %d" % train_mutations)
+    return stage_train_idx, stage_val_idx
 
 
 def parse_args():
@@ -846,28 +1168,113 @@ def main():
     if pooling_positions is not None:
         print("Pooling designed positions: %s" % ", ".join(map(str, pooling_positions)))
 
+    encoded = load_pretokenized(args.tokenized_path, len(df))
+    if encoded is None:
+        tokenization_backbone = initialize_plain_backbone_for_tokenization(args.model_name, device)
+        encoded = tokenize_sequences(df, spec, tokenization_backbone, resolve_model_name(args.model_name))
+        del tokenization_backbone
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
     output_dim = int(np.max(labels)) + 1 if spec.task_type == "classification" else 1
-    model, backbone = initialize_plm_lora_head(
+    stage_train_idx, stage_val_idx = build_extrapolative_validation_indices(nmuts, args.train_mutations)
+
+    set_seed(args.seed)
+    stage_model, stage_backbone, stage_token_ids, _stage_matched_modules = initialize_plm_lora_head(
         args.model_name,
         spec.task_type,
         output_dim,
         device,
         args,
         pooling_positions,
+        encoded=encoded,
+        labels=labels,
+        diagnostic_indices=stage_train_idx,
+        report_init_equivalence=True,
     )
-    token_ids = resolve_token_ids(backbone.tokenizer)
-    if token_ids["pad"] is None:
-        token_ids["pad"] = 0
+    stage_best = select_epoch_by_extrapolative_validation(
+        stage_model,
+        encoded,
+        labels,
+        stage_train_idx,
+        stage_val_idx,
+        spec.task_type,
+        stage_token_ids,
+        args,
+        device,
+    )
+    del stage_model, stage_backbone
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
-    encoded = load_pretokenized(args.tokenized_path, len(df))
-    if encoded is None:
-        encoded = tokenize_sequences(df, spec, backbone, resolve_model_name(args.model_name))
+    set_seed(args.seed)
+    model, backbone, token_ids, _matched_modules = initialize_plm_lora_head(
+        args.model_name,
+        spec.task_type,
+        output_dim,
+        device,
+        args,
+        pooling_positions,
+        encoded=encoded,
+        labels=labels,
+        diagnostic_indices=train_idx,
+        report_init_equivalence=True,
+    )
+    model = train_final_fixed_epochs(
+        model,
+        encoded,
+        labels,
+        train_idx,
+        spec.task_type,
+        token_ids,
+        args,
+        device,
+        selected_epochs=stage_best["epoch"],
+    )
 
-    model = train(model, encoded, labels, train_idx, spec.task_type, token_ids, args, device)
+    prediction_frames = []
+    test_metrics = []
+    test_pred_stds = []
+    final_train_eval = evaluate_split(model, encoded, labels, train_idx, spec.task_type, token_ids, args.eval_batch_size, device)
+    final_train_metrics, final_train_scores = summarize_split_predictions(
+        "final_train_le_%d" % int(args.train_mutations),
+        labels[train_idx],
+        final_train_eval["predictions"],
+        spec.task_type,
+    )
+    final_train_pred_std = float(np.std(final_train_scores)) if len(final_train_scores) else np.nan
+    prediction_frames.append(
+        prediction_dataframe(
+            spec,
+            args,
+            split="final_train_le_%d" % int(args.train_mutations),
+            mutation_order=np.nan,
+            indices=train_idx,
+            targets=labels[train_idx],
+            prediction_scores=final_train_scores,
+        )
+    )
+    save_predictions_incremental(prediction_frames, args.output_path)
+
     for test_order in test_orders:
-        row = evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device)
+        row, pred_df, metrics = evaluate_one_order(model, encoded, labels, nmuts, test_order, spec, args, token_ids, device)
         if row is not None:
             save_result_incremental(row, args.output_path)
+        if pred_df is not None:
+            prediction_frames.append(pred_df)
+            test_pred_stds.append(float(np.std(pred_df["prediction"].to_numpy(dtype=float))) if len(pred_df) else np.nan)
+        if metrics is not None:
+            test_metrics.append(metrics)
+        save_predictions_incremental(prediction_frames, args.output_path)
+    print_final_diagnosis(
+        spec.task_type,
+        stage_best,
+        final_train_metrics,
+        test_metrics,
+        final_train_pred_std,
+        test_pred_stds,
+        args.train_mutations,
+    )
     return 0
 
 
