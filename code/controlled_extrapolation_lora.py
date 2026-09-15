@@ -591,6 +591,14 @@ def initialization_equivalence_batch(encoded, indices, labels, token_ids, max_ex
 
 
 @torch.no_grad()
+def forward_backbone(backbone, input_ids, attention_mask=None):
+    try:
+        return backbone(input_ids, attention_mask=attention_mask)
+    except TypeError:
+        return backbone(input_ids)
+
+
+@torch.no_grad()
 def check_lora_initialization_equivalence(backbone, encoded, labels, indices, token_ids, device, max_examples):
     batch = initialization_equivalence_batch(encoded, indices, labels, token_ids, max_examples)
     if batch is None:
@@ -601,7 +609,7 @@ def check_lora_initialization_equivalence(backbone, encoded, labels, indices, to
     input_ids, attention_mask, _y = batch
     input_ids = input_ids.to(device)
     attention_mask = attention_mask.to(device)
-    before = backbone(input_ids, attention_mask=attention_mask).detach().float().cpu()
+    before = forward_backbone(backbone, input_ids, attention_mask=attention_mask).detach().float().cpu()
     if was_training:
         backbone.train()
     return input_ids, attention_mask, before, was_training
@@ -613,7 +621,7 @@ def finish_lora_initialization_equivalence(backbone, equivalence_state):
         return
     input_ids, attention_mask, before, was_training = equivalence_state
     backbone.eval()
-    after = backbone(input_ids, attention_mask=attention_mask).detach().float().cpu()
+    after = forward_backbone(backbone, input_ids, attention_mask=attention_mask).detach().float().cpu()
     diff = (before - after).abs()
     print("LoRA initialization equivalence check:")
     print("  max_absolute_difference: %.8g" % float(diff.max().item()))
