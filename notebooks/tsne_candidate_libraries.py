@@ -88,6 +88,10 @@ def normalize_embeddings(embeddings):
     return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def rank_normalize_activity(values):
+    return pd.Series(values).rank(method="average", pct=True).to_numpy(dtype=float)
+
+
 def top_variant_indices_from_feature_columns(one_hot, feature_indices, k):
     feature_indices = np.asarray(feature_indices, dtype=int)
     if np.any(feature_indices < 0) or np.any(feature_indices >= one_hot.shape[1]):
@@ -293,6 +297,7 @@ def parse_args():
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--embeddings_path", default=None)
     parser.add_argument("--activity_column", default="activity")
+    parser.add_argument("--rank_normalize_activity", action="store_true", help="Use percentile ranks of the activity column for contour values.")
     parser.add_argument("--first_col", default=None)
     parser.add_argument("--last_col", default=None)
     parser.add_argument("--S", type=int, default=None, help="Library S size, recorded in the default output name.")
@@ -342,7 +347,10 @@ def main():
     df = pd.read_csv(dataset_path)
     if args.activity_column not in df.columns:
         raise ValueError("activity column %r not found in %s" % (args.activity_column, dataset_path))
-    activity = df[args.activity_column].to_numpy(dtype=float)
+    raw_activity = df[args.activity_column].to_numpy(dtype=float)
+    activity = rank_normalize_activity(raw_activity) if args.rank_normalize_activity else raw_activity
+    if args.rank_normalize_activity:
+        print("Activity contour values: percentile-rank normalized from %s" % args.activity_column)
 
     embeddings = load_embeddings(embeddings_path)
     if embeddings.shape[0] != len(df):
@@ -438,6 +446,7 @@ def main():
                 "rank": rank,
                 "row_index": int(row_idx),
                 "activity": activity[int(row_idx)],
+                "raw_activity": raw_activity[int(row_idx)],
                 "library_index_mode": args.library_index_mode,
                 "max_outside_muts": args.max_outside_muts if args.library_index_mode == "mutation_columns" else np.nan,
             })
