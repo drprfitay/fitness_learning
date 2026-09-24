@@ -439,13 +439,7 @@ def score_left_to_right(
             use_mixed_precision=use_mixed_precision,
         )
 
-        parent_and_token = torch.stack(
-            [
-                variant_to_state,
-                target_tokens,
-            ],
-            dim=1,
-        )
+        parent_and_token = torch.stack([variant_to_state,target_tokens,],dim=1,)
 
         unique_parent_and_token, variant_to_next_state = torch.unique(
             parent_and_token,
@@ -453,11 +447,9 @@ def score_left_to_right(
             return_inverse=True,
         )
 
-        pair_scores = state_log_probs[
-            unique_parent_and_token[:, 0],
-            unique_parent_and_token[:, 1],
-        ]
+        pair_scores = state_log_probs[unique_parent_and_token[:, 0],unique_parent_and_token[:, 1],]
 
+        # Accumulate the scores this is already log-prob'ed
         sequence_scores += pair_scores[variant_to_next_state]
 
         if local_position < n_working_positions - 1:
