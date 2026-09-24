@@ -417,6 +417,10 @@ def score_left_to_right(
 
     for local_position in range(n_working_positions):
         absolute_position = int(working_positions[local_position])
+        output_position = absolute_position
+        if str(getattr(model, "plm_name", "")).startswith("progen"):
+            output_position -= 1
+
         target_tokens = variant_working_tokens[:, local_position]
 
         if verbose:
@@ -434,7 +438,7 @@ def score_left_to_right(
             wt_tokens=wt_tokens,
             working_positions=working_positions,
             mutable_states=current_states,
-            output_positions=absolute_position,
+            output_positions=output_position,
             forward_batch_size=forward_batch_size,
             use_mixed_precision=use_mixed_precision,
         )
