@@ -1,0 +1,104 @@
+nohup: ignoring input
+[INFO] Using device: cuda
+[INFO] GPU: NVIDIA L40S
+########################################################
+[INFO] Working on gfp
+[INFO] WT index is 349918
+[INFO] Working positions are 42 44 61 65 68 69 72 94 108 112 121 145 148 150 167 181 185 203 205 220 222 224
+[INFO] Overall 523369 sequences to process
+[INFO] WT sequence is MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTLVTTLTYGVQCFSRYPDHMKRHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVNRIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKTRHNIEDGSVQLADHYQQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITHGMDELYN
+[INFO] WT sequence length is 238
+[INFO] Cache path is ./data/gfp/gfp_dataset_10mut_cache/misc/
+########################################################
+########################################################
+[INFO] Loading progen2-medium
+/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/new_calc_fitness_with_decoding.py:559: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  tokenized_sequence = torch.load(
+[INFO] ASSERT 1/2 (preprocessing) passed
+[INFO] ASSERT 2/2 (preprocessing) passed
+########################################################
+Shape of tokenized sequence is torch.Size([523369, 240])
+ProGenForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly overwritten. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/code/plm_base.py:270: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(weights_path))
+[INFO] Model is on cuda:0
+[INFO] Asserting 20 random sequences
+[INFO] ASSERT 5/20 (random sequence tokenization assertion) passed
+[INFO] ASSERT 10/20 (random sequence tokenization assertion) passed
+[INFO] ASSERT 15/20 (random sequence tokenization assertion) passed
+[INFO] ASSERT 20/20 (random sequence tokenization assertion) passed
+[INFO] Vocab is {'I': 13, 'B': 6, 'U': 24, 'X': 27, 'N': 17, 'H': 12, 'G': 11, 'R': 21, 'Q': 20, 'O': 18, 'Z': 29, 'A': 5, 'K': 14, 'M': 16, 'F': 10, 'V': 25, '<|bos|>': 1, 'E': 9, 'W': 26, '1': 3, 'P': 19, '<|pad|>': 0, '2': 4, 'S': 22, '<|eos|>': 2, 'D': 8, 'Y': 28, 'C': 7, 'T': 23, 'L': 15}
+[INFO] Mask token string is <|pad|>
+[INFO] Mask token value is 0
+[WARNING] ProGen2 is causal. Using its pad token as a mask is not equivalent to native causal likelihood.
+[INFO] WT tokens before masking are tensor([[ 1, 16, 22, 14, 11,  9,  9, 15, 10, 23, 11, 25, 25, 19, 13, 15, 25,  9,
+         15,  8, 11,  8, 25, 17, 11, 12, 14, 10, 22, 25, 22, 11,  9, 11,  9, 11,
+          8,  5, 23, 28, 11, 14, 15, 23, 15, 14, 10, 13,  7, 23, 23, 11, 14, 15,
+         19, 25, 19, 26, 19, 23, 15, 25, 23, 23, 15, 23, 28, 11, 25, 20,  7, 10,
+         22, 21, 28, 19,  8, 12, 16, 14, 21, 12,  8, 10, 10, 14, 22,  5, 16, 19,
+          9, 11, 28, 25, 20,  9, 21, 23, 13, 10, 10, 14,  8,  8, 11, 17, 28, 14,
+         23, 21,  5,  9, 25, 14, 10,  9, 11,  8, 23, 15, 25, 17, 21, 13,  9, 15,
+         14, 11, 13,  8, 10, 14,  9,  8, 11, 17, 13, 15, 11, 12, 14, 15,  9, 28,
+         17, 28, 17, 22, 12, 17, 25, 28, 13, 16,  5,  8, 14, 20, 14, 17, 11, 13,
+         14, 25, 17, 10, 14, 23, 21, 12, 17, 13,  9,  8, 11, 22, 25, 20, 15,  5,
+          8, 12, 28, 20, 20, 17, 23, 19, 13, 11,  8, 11, 19, 25, 15, 15, 19,  8,
+         17, 12, 28, 15, 22, 23, 20, 22,  5, 15, 22, 14,  8, 19, 17,  9, 14, 21,
+          8, 12, 16, 25, 15, 15,  9, 10, 25, 23,  5,  5, 11, 13, 23, 12, 11, 16,
+          8,  9, 15, 28, 17,  2]])
+[INFO] WT tokens after masking are tensor([[ 1, 16, 22, 14, 11,  9,  9, 15, 10, 23, 11, 25, 25, 19, 13, 15, 25,  9,
+         15,  8, 11,  8, 25, 17, 11, 12, 14, 10, 22, 25, 22, 11,  9, 11,  9, 11,
+          8,  5, 23, 28, 11, 14,  0, 23,  0, 14, 10, 13,  7, 23, 23, 11, 14, 15,
+         19, 25, 19, 26, 19, 23, 15,  0, 23, 23, 15,  0, 28, 11,  0,  0,  7, 10,
+          0, 21, 28, 19,  8, 12, 16, 14, 21, 12,  8, 10, 10, 14, 22,  5, 16, 19,
+          9, 11, 28, 25,  0,  9, 21, 23, 13, 10, 10, 14,  8,  8, 11, 17, 28, 14,
+          0, 21,  5,  9,  0, 14, 10,  9, 11,  8, 23, 15, 25,  0, 21, 13,  9, 15,
+         14, 11, 13,  8, 10, 14,  9,  8, 11, 17, 13, 15, 11, 12, 14, 15,  9, 28,
+         17,  0, 17, 22,  0, 17,  0, 28, 13, 16,  5,  8, 14, 20, 14, 17, 11, 13,
+         14, 25, 17, 10, 14,  0, 21, 12, 17, 13,  9,  8, 11, 22, 25, 20, 15,  5,
+          8,  0, 28, 20, 20,  0, 23, 19, 13, 11,  8, 11, 19, 25, 15, 15, 19,  8,
+         17, 12, 28, 15, 22,  0, 20,  0,  5, 15, 22, 14,  8, 19, 17,  9, 14, 21,
+          8, 12, 16, 25,  0, 15,  0, 10,  0, 23,  5,  5, 11, 13, 23, 12, 11, 16,
+          8,  9, 15, 28, 17,  2]])
+[INFO] diff: tensor([[ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0, 15,  0, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0,  0, 25,  0,  0,  0, 23,  0,  0, 25, 20,  0,  0,
+         22,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0, 20,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+         23,  0,  0,  0, 25,  0,  0,  0,  0,  0,  0,  0,  0, 17,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0, 28,  0,  0, 12,  0, 25,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0, 23,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0, 12,  0,  0,  0, 17,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0, 23,  0, 22,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0, 15,  0,  9,  0, 25,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+          0,  0,  0,  0,  0,  0]])
+[INFO] ASSERT 1/2 (masking) passed
+[INFO] ASSERT 2/2 (masking) passed
+########################################################
+[INFO] Scoring progen2-medium using left_to_right
+[INFO] left_to_right step 1/22: 1 unique partial states
+[INFO] left_to_right step 2/22: 3 unique partial states
+[INFO] left_to_right step 3/22: 7 unique partial states
+[INFO] left_to_right step 4/22: 11 unique partial states
+[INFO] left_to_right step 5/22: 17 unique partial states
+[INFO] left_to_right step 6/22: 41 unique partial states
+[INFO] left_to_right step 7/22: 158 unique partial states
+[INFO] left_to_right step 8/22: 734 unique partial states
+[INFO] left_to_right step 9/22: 770 unique partial states
+[INFO] left_to_right step 10/22: 3650 unique partial states
+[INFO] left_to_right step 11/22: 7286 unique partial states
+[INFO] left_to_right step 12/22: 7368 unique partial states
+[INFO] left_to_right step 13/22: 49995 unique partial states
+[INFO] left_to_right step 14/22: 50204 unique partial states
+[INFO] left_to_right step 15/22: 85579 unique partial states
+[INFO] left_to_right step 16/22: 137576 unique partial states
+[INFO] left_to_right step 17/22: 330786 unique partial states
+[INFO] left_to_right step 18/22: 331498 unique partial states
+[INFO] left_to_right step 19/22: 336764 unique partial states
+[INFO] left_to_right step 20/22: 348350 unique partial states
+[INFO] left_to_right step 21/22: 437571 unique partial states
+[INFO] left_to_right step 22/22: 438027 unique partial states
