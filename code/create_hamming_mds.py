@@ -17,7 +17,11 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_name", default=None, help="Dataset name under <root>/data/<dataset>/<dataset>.csv")
+    parser.add_argument(
+        "--dataset_name",
+        default=None,
+        help="Dataset name under <root>/data/<dataset>/<dataset>.csv",
+    )
     parser.add_argument("--dataset_path", default=None, help="Explicit dataset CSV path")
     parser.add_argument("--root_path", default=str(DEFAULT_ROOT))
     parser.add_argument("--first_col", "--first_mutation_col", default=None)
@@ -25,19 +29,33 @@ def parse_args():
     parser.add_argument("--sequence_col", "--sequence_column_name", default="full_seq")
     parser.add_argument("--num_muts_col", "--num_muts_colname", default="num_muts")
     parser.add_argument("--activity_col", "--activity_column_name", default="activity")
-    parser.add_argument("--N", type=int, default=None, help="Randomly sample N selected variants before adding WT")
-    parser.add_argument("--nmuts", type=int, nargs="+", default=None, help="Keep only these num_muts values")
+    parser.add_argument(
+        "--N", type=int, default=None, help="Randomly sample N selected variants before adding WT"
+    )
+    parser.add_argument(
+        "--nmuts", type=int, nargs="+", default=None, help="Keep only these num_muts values"
+    )
     parser.add_argument("--random_seed", type=int, default=0)
 
-    parser.add_argument("--onehot_path", default=None, help="External OHE matrix: .npy, .npz, .pt, .csv, .tsv")
+    parser.add_argument(
+        "--onehot_path", default=None, help="External OHE matrix: .npy, .npz, .pt, .csv, .tsv"
+    )
     parser.add_argument("--wt_onehot_path", default=None, help="External WT OHE vector path")
-    parser.add_argument("--wt_index", type=int, default=None, help="Use this row from the external OHE matrix as WT")
+    parser.add_argument(
+        "--wt_index", type=int, default=None, help="Use this row from the external OHE matrix as WT"
+    )
 
     parser.add_argument("--output_type", choices=["npy", "figure", "both"], default="npy")
     parser.add_argument("--output_path", default=None, help="Output .npy path for distance matrix")
+    parser.add_argument(
+        "--embedding_path", default=None, help="Output .npy path for MDS coordinates"
+    )
+    parser.add_argument("--embedding_components", type=int, default=2)
     parser.add_argument("--figure_path", default=None, help="Output figure path")
     parser.add_argument("--figure_format", choices=["png", "svg"], default="png")
-    parser.add_argument("--alpha", type=float, default=0.85, help="Point transparency for plotted variants.")
+    parser.add_argument(
+        "--alpha", type=float, default=0.85, help="Point transparency for plotted variants."
+    )
     parser.add_argument("--dpi", type=int, default=300)
     return parser.parse_args()
 
@@ -47,10 +65,20 @@ def dataset_csv_path(args) -> Path:
         return Path(args.dataset_path).expanduser()
     if not args.dataset_name:
         raise ValueError("provide --dataset_name or --dataset_path")
-    return Path(args.root_path).expanduser() / "data" / args.dataset_name / f"{args.dataset_name}.csv"
+    return (
+        Path(args.root_path).expanduser()
+        / "data"
+        / args.dataset_name
+        / f"{args.dataset_name}.csv"
+    )
 
 
-def mutation_columns(df: pd.DataFrame, first_col: str | None, last_col: str | None, sequence_col: str) -> list[str]:
+def mutation_columns(
+    df: pd.DataFrame,
+    first_col: str | None,
+    last_col: str | None,
+    sequence_col: str,
+) -> list[str]:
     columns = list(df.columns)
     if first_col is not None or last_col is not None:
         if first_col not in columns or last_col not in columns:
@@ -61,14 +89,21 @@ def mutation_columns(df: pd.DataFrame, first_col: str | None, last_col: str | No
             raise ValueError("--last_col must appear after --first_col")
         return columns[si:ei]
 
-    stop_candidates = [col for col in [sequence_col, "sanity_mut_numb", "activity", "num_muts"] if col in columns]
+    stop_candidates = [
+        col
+        for col in [sequence_col, "sanity_mut_numb", "activity", "num_muts"]
+        if col in columns
+    ]
     if not stop_candidates:
         raise ValueError("could not infer mutation columns; provide --first_col and --last_col")
     stop = min(columns.index(col) for col in stop_candidates)
     inferred = columns[:stop]
     if not inferred:
         raise ValueError("inferred zero mutation columns; provide --first_col and --last_col")
-    print(f"[hamming_mds] inferred mutation columns: first={inferred[0]} last={inferred[-1]} count={len(inferred)}")
+    print(
+        f"[hamming_mds] inferred mutation columns: first={inferred[0]} "
+        f"last={inferred[-1]} count={len(inferred)}"
+    )
     return inferred
 
 
@@ -154,7 +189,9 @@ def build_external_onehot(args) -> tuple[np.ndarray, np.ndarray, np.ndarray, Pat
         selected_df, selected_indices = select_dataframe(df, args)
         selected_indices = selected_indices.astype(int)
         if x_all.shape[0] != len(df):
-            raise ValueError(f"external onehot rows {x_all.shape[0]} do not match dataset rows {len(df)}")
+            raise ValueError(
+                f"external onehot rows {x_all.shape[0]} do not match dataset rows {len(df)}"
+            )
     else:
         csv_path = None
         selected_indices = np.arange(x_all.shape[0], dtype=int)
@@ -174,7 +211,9 @@ def build_external_onehot(args) -> tuple[np.ndarray, np.ndarray, np.ndarray, Pat
 
     x_ohe = x_all[selected_indices]
     if wt_ohe.shape[0] != x_ohe.shape[1]:
-        raise ValueError(f"WT OHE length {wt_ohe.shape[0]} does not match matrix width {x_ohe.shape[1]}")
+        raise ValueError(
+            f"WT OHE length {wt_ohe.shape[0]} does not match matrix width {x_ohe.shape[1]}"
+        )
 
     print(f"[hamming_mds] external_onehot={args.onehot_path}")
     print(f"[hamming_mds] variants={x_ohe.shape[0]} ohe_features={x_ohe.shape[1]}")
@@ -214,7 +253,27 @@ def default_figure_path(args, csv_path: Path | None) -> Path:
     return csv_path.parent / "mds" / f"hamming_mds.{args.figure_format}"
 
 
-def save_matrix(distance_matrix: np.ndarray, selected_indices: np.ndarray, args, csv_path: Path | None) -> None:
+def default_embedding_path(args, csv_path: Path | None) -> Path:
+    if args.embedding_path:
+        embedding_path = Path(args.embedding_path).expanduser()
+        if embedding_path.suffix.lower() != ".npy":
+            return embedding_path / "hamming_mds_coordinates.npy"
+        return embedding_path
+    if args.output_path:
+        return default_output_path(args, csv_path).parent / "hamming_mds_coordinates.npy"
+    if args.figure_path:
+        return default_figure_path(args, csv_path).parent / "hamming_mds_coordinates.npy"
+    if csv_path is None:
+        raise ValueError("provide --embedding_path when no dataset path is available")
+    return csv_path.parent / "mds" / "hamming_mds_coordinates.npy"
+
+
+def save_matrix(
+    distance_matrix: np.ndarray,
+    selected_indices: np.ndarray,
+    args,
+    csv_path: Path | None,
+) -> None:
     output_path = default_output_path(args, csv_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(output_path, distance_matrix)
@@ -223,25 +282,51 @@ def save_matrix(distance_matrix: np.ndarray, selected_indices: np.ndarray, args,
     print(f"[hamming_mds] saved selected indices={output_path.with_suffix('.indices.npy')}")
 
 
-def save_figure(distance_matrix: np.ndarray, args, csv_path: Path | None) -> None:
-    import matplotlib.pyplot as plt
+def calculate_embedding(distance_matrix: np.ndarray, args) -> np.ndarray:
+    mds_kwargs = {
+        "n_components": args.embedding_components,
+        "dissimilarity": "precomputed",
+        "random_state": args.random_seed,
+    }
 
     try:
-        mds = MDS(
-            n_components=2,
-            dissimilarity="precomputed",
-            random_state=args.random_seed,
-            normalized_stress="auto",
-        )
+        mds = MDS(**mds_kwargs, normalized_stress="auto")
     except TypeError:
-        mds = MDS(
-            n_components=2,
-            dissimilarity="precomputed",
-            random_state=args.random_seed,
-        )
+        mds = MDS(**mds_kwargs)
 
     coords = mds.fit_transform(distance_matrix)
-    coords = coords - coords[0]
+    return coords - coords[0]
+
+
+def save_embedding(
+    coords: np.ndarray,
+    selected_indices: np.ndarray,
+    args,
+    csv_path: Path | None,
+) -> None:
+    embedding_path = default_embedding_path(args, csv_path)
+    embedding_path.parent.mkdir(parents=True, exist_ok=True)
+
+    coordinate_indices = np.concatenate(
+        [np.array([-1], dtype=int), np.asarray(selected_indices, dtype=int)]
+    )
+    np.save(embedding_path, coords)
+    np.save(embedding_path.with_suffix(".indices.npy"), coordinate_indices)
+
+    print(f"[hamming_mds] saved MDS coordinates={embedding_path} shape={coords.shape}")
+    print(
+        "[hamming_mds] saved coordinate indices="
+        f"{embedding_path.with_suffix('.indices.npy')} (row 0 is WT, index=-1)"
+    )
+
+
+def save_figure(
+    distance_matrix: np.ndarray,
+    coords: np.ndarray,
+    args,
+    csv_path: Path | None,
+) -> None:
+    import matplotlib.pyplot as plt
     hamming_from_wt = distance_matrix[0, 1:]
 
     figure_path = default_figure_path(args, csv_path)
@@ -250,7 +335,15 @@ def save_figure(distance_matrix: np.ndarray, args, csv_path: Path | None) -> Non
 
     plt.figure(figsize=(5, 5))
     sc = plt.scatter(coords[1:, 0], coords[1:, 1], c=hamming_from_wt, s=25, alpha=args.alpha)
-    plt.scatter(coords[0, 0], coords[0, 1], s=160, marker="*", edgecolor="black", linewidth=1.2, label="WT")
+    plt.scatter(
+        coords[0, 0],
+        coords[0, 1],
+        s=160,
+        marker="*",
+        edgecolor="black",
+        linewidth=1.2,
+        label="WT",
+    )
     plt.colorbar(sc, label="Hamming distance from WT")
     plt.xlabel("Sequence space (MDS 1)")
     plt.ylabel("Sequence space (MDS 2)")
@@ -266,17 +359,21 @@ def main():
     args = parse_args()
     if args.alpha < 0 or args.alpha > 1:
         raise ValueError("--alpha must be between 0 and 1")
+    if args.embedding_components < 2:
+        raise ValueError("--embedding_components must be at least 2")
     if args.onehot_path:
         x_ohe, wt_ohe, selected_indices, csv_path = build_external_onehot(args)
     else:
         x_ohe, wt_ohe, selected_indices, csv_path = build_dataset_onehot(args)
 
     distance_matrix = hamming_distance_matrix(x_ohe, wt_ohe)
+    coords = calculate_embedding(distance_matrix, args)
+    save_embedding(coords, selected_indices, args, csv_path)
 
     if args.output_type in {"npy", "both"}:
         save_matrix(distance_matrix, selected_indices, args, csv_path)
     if args.output_type in {"figure", "both"}:
-        save_figure(distance_matrix, args, csv_path)
+        save_figure(distance_matrix, coords, args, csv_path)
 
 
 if __name__ == "__main__":

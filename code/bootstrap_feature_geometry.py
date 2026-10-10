@@ -16,33 +16,74 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-FEATURES_PT = Path("features.pt")
+
+
+# N = 200
+# K = 100
+# TEST_FRAC = 0.8
+# SEED = 0
+
+# ALPHAS = np.logspace(-2, 4, 13)
+# RIDGE_CV_FOLDS = 5
+# SUPPRESS_LINALG_WARNINGS = True
+
+# VERBOSE = True
+# PRINT_EVERY = 5
+
+# ---- Data sampling and experiment parameters ----
+N = 1500
+K = 30
+SEED = 0
+TEST_FRAC = 0.5
+
+# ---- Ridge regression and CV parameters ----
+ALPHAS = np.array([10.0, 100])
+RIDGE_CV_FOLDS = 2
+USE_FIXED_ALPHA = False
+FIXED_ALPHA = 100.0  # (in ALPHAS as well)
+
+SUPPRESS_LINALG_WARNINGS = True
+
+# ---- Output and reporting parameters ----
+VERBOSE = True
+PRINT_EVERY = 1
+PRINT_SELECTED_ALPHA = True
+
+SAVE_CSV = None  # (not in this block, only here for potential reference)
+DATASET_NAME = "his5"
+SAVE_RECONSTRUCTION_EXAMPLES = True
+RECONSTRUCTION_DIRNAME = "reconstruction_analysis"
+BASE_PATH = "/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/"
+FEATURES_PT = Path("%s/data/%s/external_scoring/new_features.pt" % (BASE_PATH, DATASET_NAME))
 SAVE_CSV = None
-DATASET_NAME = None
 ONEHOT_KEY = "onehot"
 SKIP_KEYS = {"activity"}
+KEYS_TO_INCLUDE = ['partial_protbert_mean', 'full_saprot_mean', 'partial_saprot_mean', 'partial_esm_35m_mean']
 
-N = 512
-K = 100
-TEST_FRAC = 0.5
-SEED = 0
 
-ALPHAS = np.logspace(-2, 4, 13)
-RIDGE_CV_FOLDS = 5
-USE_FIXED_ALPHA = False
-FIXED_ALPHA = 100.0
-SUPPRESS_LINALG_WARNINGS = True
-PRINT_SELECTED_ALPHA = True
-REPORT_OHE_TO_FEATURE_R2_QUANTILES = False
-R2_QUANTILES = [0, 5, 25, 50, 75, 95, 100]
-
-SAVE_RECONSTRUCTION_EXAMPLES = False
-RECONSTRUCTION_DIRNAME = "reconstruction_analysis"
 HEATMAP_MAX_VARIANTS = 200
 HEATMAP_MAX_FEATURES = 300
 
-VERBOSE = True
-PRINT_EVERY = 5
+REPORT_OHE_TO_FEATURE_R2_QUANTILES = True
+R2_QUANTILES = [0, 5, 25, 50, 75, 95, 100]
+
+
+DATASET_PATHS = {
+    "gfp" : "data/gfp/gfp_dataset_10mut.csv",
+    "lov": "data/lov/lov.csv",
+    "pard3": "data/pard3/pard3.csv",
+    "gcn4": "data/gcn4/gcn4.csv",
+    "pte": "data/pte/pte.csv",
+    "nmt": "data/nmt/nmt.csv",
+    "aamyl": "data/aamyl/aamyl.csv",
+    "trpb": "data/trpb/trpb.csv",
+    "ired": "data/ired/ired.csv",
+    "nucb": "data/nucb/nucb.csv",
+    #"his": "data/his/his.csv",
+    "his2": "data/his2/his2.csv",
+    "his5": "data/his5/his5.csv",
+    "casp": "data/casp/casp.csv"
+}
 
 
 def to_numpy(x):
@@ -358,9 +399,16 @@ def save_reconstruction_example(feature_name, ohe, feat, example):
     )
 
 
-def main():
+def old_main():
     arrays = load_features(FEATURES_PT)
     ohe = arrays[ONEHOT_KEY]
+    final_arr = []
+    for k in arrays.keys():
+        if k in KEYS_TO_INCLUDE:
+            print("\tKeeping %s (%s)" % (k, arrays[k].shape))
+            final_arr.append((k, arrays[k]))
+    arrays = dict(final_arr)
+
     sample_size = len(ohe) if N == -1 else N
     train_size = int(round(sample_size * (1.0 - TEST_FRAC)))
 
@@ -408,6 +456,120 @@ def main():
     print_summary(results)
     save_results(results, train_size, sample_size - train_size)
 
+def main():
+    arrays = load_features(FEATURES_PT)
+    ohe = arrays[ONEHOT_KEY]
+
+    arrays = {
+        k: arrays[k]
+        for k in KEYS_TO_INCLUDE
+        if k in arrays
+    }
+
+    print(FEATURES_PT)
+    # mutation order
+    df = pd.read_csv("%s/%s" % (BASE_PATH, DATASET_PATHS[DATASET_NAME]))
+    nmuts = df["num_muts"].to_numpy().astype(int)
+    print(np.unique(nmuts, return_counts=True))
+    df = df[nmuts <= 4]
+    nmuts = df["num_muts"].to_numpy().astype(int)
+
+
+    print("CSV rows:", len(nmuts))
+    print("Feature rows:", len(ohe))
+
+    # features may exclude WT
+    if len(nmuts) == len(ohe) + 1 and np.sum(nmuts == 0) == 1:
+        print("Dropping WT row from mutation counts")
+        nmuts = nmuts[nmuts != 0]
+
+    if len(nmuts) != len(ohe):
+        raise ValueError(
+            f"Row mismatch: CSV has {len(nmuts)} variants, "
+            f"features have {len(ohe)} variants"
+        )
+
+    assert len(nmuts) == len(ohe)
+
+    feature_keys = list(arrays.keys())
+    output_rows = []
+
+    # controlled extrapolation:
+    # train 1 -> test 2
+    # train 1+2 -> test 3
+    # train 1+2+3 -> test 4
+    # ...
+    max_order = int(nmuts.max())
+
+
+    for train_max_order in range(1, max_order):
+
+        train_idx = np.where(
+            (nmuts >= 1) & (nmuts <= train_max_order)
+        )[0]
+
+        if len(train_idx) == 0:
+            continue
+
+        for test_order in range(train_max_order + 1, max_order + 1):
+
+            test_idx = np.where(nmuts == test_order)[0]
+
+            if len(test_idx) == 0:
+                continue
+
+            sample = np.concatenate([train_idx, test_idx])
+
+            print(
+                f"\nTrain orders 1-{train_max_order} "
+                f"({len(train_idx)} variants) -> "
+                f"test order {test_order} "
+                f"({len(test_idx)} variants)"
+            )
+
+            for key in feature_keys:
+
+                row, _ = one_round(
+                    ohe,
+                    arrays[key],
+                    sample,
+                    train_idx,
+                    test_idx,
+                    key,
+                    return_example=False,
+                )
+
+                print(
+                    key,
+                    "OHE->feat R2:",
+                    row["ohe_to_feature_weighted_r2"],
+                )
+
+                for metric, value in row.items():
+                    if metric.endswith("_alpha"):
+                        continue
+
+                    output_rows.append({
+                        "dataset": DATASET_NAME,
+                        "feature": key,
+                        "train_max_order": train_max_order,
+                        "test_order": test_order,
+                        "train_size": len(train_idx),
+                        "test_size": len(test_idx),
+                        "metric": output_metric_name(metric),
+                        "alpha": metric_alpha(metric, row),
+                        "value": value,
+                    })
+    out = (
+        Path(SAVE_CSV).expanduser()
+        if SAVE_CSV
+        else Path(FEATURES_PT).expanduser().with_name(
+            "controlled_extrapolation_reconstruction.csv"
+        )
+    )
+
+    pd.DataFrame(output_rows).to_csv(out, index=False)
+    print(f"\nsaved {out}")
 
 if __name__ == "__main__":
     main()
