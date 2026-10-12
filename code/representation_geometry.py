@@ -16,6 +16,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 
+from utils import root_dataset_path, DATASET_PATHS
+
 
 
 # N = 200
@@ -53,8 +55,8 @@ SAVE_CSV = None  # (not in this block, only here for potential reference)
 DATASET_NAME = "his5"
 SAVE_RECONSTRUCTION_EXAMPLES = True
 RECONSTRUCTION_DIRNAME = "reconstruction_analysis"
-BASE_PATH = "/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/"
-FEATURES_PT = Path("%s/data/%s/external_scoring/new_features.pt" % (BASE_PATH, DATASET_NAME))
+BASE_PATH = root_dataset_path
+FEATURES_PT = Path("%s/%s/reconstruction_analyses/new_features.pt" % (BASE_PATH, DATASET_NAME))
 SAVE_CSV = None
 ONEHOT_KEY = "onehot"
 SKIP_KEYS = {"activity"}
@@ -68,22 +70,6 @@ REPORT_OHE_TO_FEATURE_R2_QUANTILES = True
 R2_QUANTILES = [0, 5, 25, 50, 75, 95, 100]
 
 
-DATASET_PATHS = {
-    "gfp" : "data/gfp/gfp_dataset_10mut.csv",
-    "lov": "data/lov/lov.csv",
-    "pard3": "data/pard3/pard3.csv",
-    "gcn4": "data/gcn4/gcn4.csv",
-    "pte": "data/pte/pte.csv",
-    "nmt": "data/nmt/nmt.csv",
-    "aamyl": "data/aamyl/aamyl.csv",
-    "trpb": "data/trpb/trpb.csv",
-    "ired": "data/ired/ired.csv",
-    "nucb": "data/nucb/nucb.csv",
-    #"his": "data/his/his.csv",
-    "his2": "data/his2/his2.csv",
-    "his5": "data/his5/his5.csv",
-    "casp": "data/casp/casp.csv"
-}
 
 
 def to_numpy(x):
@@ -399,7 +385,7 @@ def save_reconstruction_example(feature_name, ohe, feat, example):
     )
 
 
-def old_main():
+def regular_main():
     arrays = load_features(FEATURES_PT)
     ohe = arrays[ONEHOT_KEY]
     final_arr = []
@@ -456,7 +442,7 @@ def old_main():
     print_summary(results)
     save_results(results, train_size, sample_size - train_size)
 
-def main():
+def controlled_exp_main():
     arrays = load_features(FEATURES_PT)
     ohe = arrays[ONEHOT_KEY]
 
@@ -529,21 +515,9 @@ def main():
 
             for key in feature_keys:
 
-                row, _ = one_round(
-                    ohe,
-                    arrays[key],
-                    sample,
-                    train_idx,
-                    test_idx,
-                    key,
-                    return_example=False,
-                )
+                row, _ = one_round(ohe,arrays[key],sample,train_idx,test_idx,key,return_example=False)
 
-                print(
-                    key,
-                    "OHE->feat R2:",
-                    row["ohe_to_feature_weighted_r2"],
-                )
+                print(key,"OHE->feat R2:",row["ohe_to_feature_weighted_r2"],)
 
                 for metric, value in row.items():
                     if metric.endswith("_alpha"):
@@ -572,4 +546,4 @@ def main():
     print(f"\nsaved {out}")
 
 if __name__ == "__main__":
-    main()
+    regular_main()

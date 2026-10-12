@@ -1,760 +1,424 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Jun 24 13:26:20 2025
+"""Simple MLM fine-tuning over aligned protein sequences."""
 
-@author: itayta
-"""
+from __future__ import annotations
 
+import argparse
+import json
+import random
+from pathlib import Path
+from typing import Iterable
 
-import sys, os
 import torch
-from torch.cpu import device_count
 import torch.nn.functional as F
-from torch.utils.data import Subset
-import loralib as lora
-import scipy.stats
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
-import einops
+from torch.utils.data import DataLoader, Dataset
+
+from plm_base import load_model, plm_init
 
 
-import time
+IGNORE_INDEX = -100
 
 
-from utils import *
-from dataset import *
-from embedder import *
-from plm_base import *
+def read_aligned_sequences(msa_path: str | Path) -> list[str]:
+    """Read aligned sequences from FASTA or one-sequence-per-line text."""
+    msa_path = Path(msa_path)
+    sequences: list[str] = []
+    current: list[str] = []
+    saw_fasta = False
 
-
-
-
-def get_indices(sequence_df, nmuts, nmuts_column="num_of_muts", rev=False, verbose=False):
-        
-    indices = np.repeat(False, sequence_df.shape[0])
-        
-    if type(nmuts) == int:
-        nmuts = [nmuts]
-            
-    for nm in nmuts:
-        indices = indices | (sequence_df[nmuts_column] == nm).to_numpy()
-
-        if verbose:
-            print("Indices included: %d" % sum(indices))
-            
-    if rev:
-        indices = ~indices
-            
-    return(np.where(indices)[0].tolist())
-    
-
-def select_design_pos(seq):
-    return([seq[21], seq[23], seq[24]])
-
-def train_plm_triplet_model(
-    plm_name: str,
-    save_path: str,
-    train_test_dataset,
-    pos_to_use=None,
-    batch_size=32,
-    iterations=20000,
-    margin=1.0,
-    lr=4e-6,
-    weight_decay=0.1,
-    encoding_identifier=None,
-    opmode="pos",
-    hidden_layers=[1024],
-    activation="sigmoid",
-    train_type="triplet",
-    layer_norm=False,
-    activation_on_last_layer=False,
-    device=torch.device("cpu"),
-    model=None  
-):
-
-    print("\n[DEBUG] Training parameters:")
-    print(f"\tplm_name: {plm_name}")
-    print(f"\tsave_path: {save_path}")
-    print("\ttrain_dataset size: %d" % len(train_test_dataset.train_dataset))
-    print(f"\tpos_to_use: {pos_to_use}")
-    print(f"\tbatch_size: {batch_size}")
-    print(f"\titerations: {iterations}")
-    print(f"\tmargin: {margin}")
-    print(f"\tlr: {lr}")
-    print(f"\tweight_decay: {weight_decay}")
-    print(f"\tencoding_identifier: {encoding_identifier}")
-    print(f"\topmode: {opmode}")
-    print(f"\thidden_layers: {hidden_layers}")
-    print(f"\tactivation: {activation}")
-    
-    print(f"\tlayer_norm: {layer_norm}")
-    print(f"\tactivation_on_last_layer: {activation_on_last_layer}")
-    print(f"\tdevice: {device}")
-    print(f"\tmodel: {type(model)}\n")
-    torch.cuda.empty_cache()
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    checkpoints_dir = os.path.join(save_path, "checkpoints")
-    os.makedirs(checkpoints_dir, exist_ok=True)
-
-    # In the future we might have other use cases,
-    emb_only = train_type  == "triplet"
-
-    if model is None:
-        model = plmEmbeddingModel(
-            plm_name=plm_name,
-            opmode=opmode,
-            emb_only=emb_only,
-            specific_pos=pos_to_use,
-            hidden_layers=hidden_layers,
-            activation=activation,
-            layer_norm=layer_norm,
-            activation_on_last_layer=activation_on_last_layer,
-            device=device
-        ).to(device)
-    else:
-        model = model.to(device)
-
-    if train_type == "direct_mlp":
-        for layer in model.epinnet_trunk.modules():
-            if isinstance(layer, torch.nn.Linear):
-                torch.nn.init.xavier_uniform_(layer.weight)
-                torch.nn.init.zeros_(layer.bias)
-
-    if train_test_dataset is None:
-        raise ValueError("train_test_dataset must be provided as an argument.")
-
-    if pos_to_use is None:
-        pos_to_use = [int(x[1:]) for x in train_test_dataset.train_dataset.sequence_dataframe.columns[3:25].tolist()]
-
-    print(f"Using positions: {pos_to_use}")
-    train_loader = torch.utils.data.DataLoader(train_test_dataset, batch_size=batch_size, shuffle=True)
-    n_epochs = ceil(iterations / len(train_loader))
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    triplet_loss = torch.nn.TripletMarginLoss(margin=margin, eps=1e-7)
-    ce_loss_fn = torch.nn.CrossEntropyLoss()
-
-    model.train()
-    avg_loss = torch.tensor([]).to(device)
-    total_steps = 0
-    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
-
-    train_test_dataset.train_dataset.labels = torch.nn.functional.one_hot(
-        train_test_dataset.train_dataset.labels.to(torch.long), 2
-    ).to(torch.float)
-
-    # Freeze all layers for the plm but the last one
-    if train_type == "direct_mlp":
-        if hasattr(model, "plm") and hasattr(model.plm, "layers"):
-            for i, layer in enumerate(model.plm.layers):
-                for param in layer.parameters():
-                    param.requires_grad = (i == len(model.plm.layers) - 1)
-
-
-    for epoch in range(n_epochs):
-        epoch_loss = torch.tensor(0.0).to(device)
-        iter_20b_loss = torch.tensor(0.0).to(device)
-        for step, batch in enumerate(train_loader):
-            x = batch[0].to(device)
-            y = batch[1].to(device)
-
-            if train_type == "direct_mlp":
-                optimizer.zero_grad()
-                a = model(x)
-                total_loss = ce_loss_fn(a[2], y)
-            elif train_type == "triplet":
-                trips = torch.tensor(online_mine_triplets(y))
-
-                if len(trips) <= 0:
-                    continue                     
-
-                hh = model(x)
-
-                emb = torch.nn.functional.normalize(hh[:,torch.tensor(pos_to_use),:], dim=1).mean(dim=1)
-                emb = torch.nn.functional.normalize(emb, dim=1)
-                emb_trip = emb[trips]
-
-                trip_loss = triplet_loss(emb_trip[:,0,:], emb_trip[:,1,:], emb_trip[:,2,:])
-                total_loss = trip_loss
-
-        
-            epoch_loss += total_loss.item()
-            iter_20b_loss += total_loss.item()
-
-            total_loss.backward()        
-            optimizer.step()
-
-            total_steps += 1
-            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
-
-            if (step + 1) % 20 == 0:
-                total_steps += 1
-                iter_20b_loss = iter_20b_loss /  20
-                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
-                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
-                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
-                plt.show()
-            #print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
-            # print(torch.unique(a[2].softmax(dim=1).argmax(dim=1), return_counts=True))
-            print("[E%d I%d] %.3f " % (epoch, step, total_loss))
-            if total_steps % 1000 == 0:
-                print("\t\tCheckpoint [%d]" % total_steps)
-                torch.save(model.state_dict(), checkpoints_dir + "/checkpoint_model_%d.pt" % total_steps)
-                torch.save(running_batch_loss.cpu().detach(), save_path + "/batch_loss.pt")
-                torch.save(running_epoch_loss.cpu().detach(), save_path + "/epoch_loss.pt")
-                torch.save(running_20b_loss.cpu().detach(), save_path + "/20b_loss.pt")
-        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
-    torch.save(model.state_dict(), save_path + "/final_model.pt")
-    torch.save(running_batch_loss.cpu().detach(), save_path + "/batch_loss.pt")
-    torch.save(running_epoch_loss.cpu().detach(), save_path + "/epoch_loss.pt")
-    torch.save(running_20b_loss.cpu().detach(), save_path + "/20b_loss.pt")
-    print(f"Model saved to {save_path}")
-    return model
-
-def train_epinnet(
-    train_test_dataset,
-    save_path: str,
-    encodings=None,
-    model=None,
-    batch_size=32,
-    iterations=20000,                  
-    lr=1e-4,
-    weight_decay=0.1,
-    hidden_layers=[1024],
-    activation="sigmoid",
-    layer_norm=True,
-    activation_on_last_layer=False,
-    device=torch.device("cpu"),
-):
-
-    torch.cuda.empty_cache()
-
-    # Initialize model if not provided
-    if model is None:
-        if encodings is None:
-            raise ValueError("If model is not provided, encodings must be passed to initialize the model.")
-        model = EpiNNet(
-            encodings.shape[1],
-            2,
-            hidden_layers=hidden_layers,
-            activation=activation,
-            layer_norm=layer_norm,
-            activation_on_last_layer=activation_on_last_layer,
-            device=device
-        ).to(device)
-
-    # One-hot encode labels for training
-    train_test_dataset.train_dataset.labels = torch.nn.functional.one_hot(
-        train_test_dataset.train_dataset.labels.to(torch.long), 2
-    ).to(torch.float)
-
-    train_loader = torch.utils.data.DataLoader(train_test_dataset, batch_size=batch_size, shuffle=True)
-    n_epochs = ceil(iterations / len(train_loader))
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    ce_loss_fn = torch.nn.CrossEntropyLoss()
-    
-    model.train()
-
-    total_steps = 0
-    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
-
-    for epoch in range(n_epochs):
-        epoch_loss = torch.tensor(0.0).to(device)
-        iter_20b_loss = torch.tensor(0.0).to(device)
-        for step, batch in enumerate(train_loader):
-            x = batch[0].to(device)
-            y = batch[1].to(device)
-            optimizer.zero_grad()
-            y_pred = model(x)
-
-            total_loss = ce_loss_fn(y_pred, y)
-            epoch_loss += total_loss.item()
-            iter_20b_loss += total_loss.item()
-            total_loss.backward()        
-            optimizer.step()
-            total_steps += 1
-
-            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
-            
-            if (step + 1) % 20 == 0:
-                iter_20b_loss = iter_20b_loss / 20
-                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
-                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
-                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
-                plt.draw()
-                plt.pause(0.001)
-                plt.close()
-                
-            print("[E%d I%d] %.3f" % (epoch, step, total_loss))
-        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
-        
-    # # Usage:
-    # train_test_dataset.lazy_load_func()
-    # train_test_dataset.test_dataset.labels = torch.nn.functional.one_hot(
-    #     train_test_dataset.test_dataset.labels.to(torch.long), 2
-    # ).to(torch.float)
-    
-    # eval_batch_size = 500
-    # test_pred = torch.tensor([])
-    # test_loader = torch.utils.data.DataLoader(
-    #     train_test_dataset.test_dataset, 
-    #     batch_size=eval_batch_size, 
-    #     shuffle=False
-    # )
-    
-    # test_score = torch.tensor([], dtype=torch.float)
-    # with torch.no_grad():
-    #     for i, batch in enumerate(test_loader):
-    #         print("Evaluating test batch %d" % i)
-    #         x = batch[0].to(device)
-    #         y = batch[1].to(device)
-    #         y_pred = model(x)
-    #         test_pred = torch.cat([test_pred, y_pred.argmax(dim=1).cpu().detach()], dim=0)
-    #         test_score = torch.cat([test_score, y_pred.softmax(dim=1)[:,0].cpu().detach()])
-            
-    # Save model
-    
-    # REVERT BACK LABELS
-    train_test_dataset.train_dataset.labels = train_test_dataset.train_dataset.labels.argmax(dim=1)
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    torch.save(model.state_dict(), save_path + "/final_model.pt")
-    torch.save(running_batch_loss.cpu().detach(), save_path + "batch_loss.pt")
-    torch.save(running_epoch_loss.cpu().detach(), save_path + "epoch_loss.pt")
-    torch.save(running_20b_loss.cpu().detach(), save_path + "20b_loss.pt")
-    print(f"Model saved to {save_path}")
-    return model
-
-def train_msa_backbone(
-    plm_name: str,
-    save_path: str,
-    train_test_dataset,
-    pos_to_use=None,
-    batch_size=32,
-    iterations=20000,
-    margin=1.0,
-    lr=4e-6,
-    weight_decay=0.1,
-    encoding_identifier=None,
-    opmode="pos",
-    hidden_layers=[1024],
-    activation="sigmoid",
-    layer_norm=False,
-    activation_on_last_layer=False,
-    device=torch.device("cpu"),
-    model=None  
-):
-
-    print("\n[DEBUG] Training parameters:")
-    print(f"\tplm_name: {plm_name}")
-    print(f"\tsave_path: {save_path}")
-    print("\ttrain_dataset size: %d" % len(train_test_dataset.train_dataset))
-    print(f"\tpos_to_use: {pos_to_use}")
-    print(f"\tbatch_size: {batch_size}")
-    print(f"\titerations: {iterations}")
-    print(f"\tmargin: {margin}")
-    print(f"\tlr: {lr}")
-    print(f"\tweight_decay: {weight_decay}")
-    print(f"\tencoding_identifier: {encoding_identifier}")
-    print(f"\topmode: {opmode}")
-    print(f"\thidden_layers: {hidden_layers}")
-    print(f"\tactivation: {activation}")
-    
-    print(f"\tlayer_norm: {layer_norm}")
-    print(f"\tactivation_on_last_layer: {activation_on_last_layer}")
-    print(f"\tdevice: {device}")
-    print(f"\tmodel: {type(model)}\n")
-    torch.cuda.empty_cache()
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    checkpoints_dir = os.path.join(save_path, "checkpoints")
-    os.makedirs(checkpoints_dir, exist_ok=True)
-
-    # In the future we might have other use cases,
-    logits_only = True
-
-    if model is None:
-        model = plmEmbeddingModel(
-            plm_name=plm_name,
-            emb_only=False
-            # opmode=opmode,
-            # logits_only=logits_only,
-            # hidden_layers=hidden_layers,
-            # activation=activation,
-            # emb_only=False,
-            # layer_norm=layer_norm,
-            # activation_on_last_layer=activation_on_last_layer,
-            # device=device
-        ).to(device)
-    else:
-        model = model.to(device)
-
-    if train_test_dataset is None:
-        raise ValueError("train_test_dataset must be provided as an argument.")
-
-    train_loader = torch.utils.data.DataLoader(train_test_dataset, batch_size=batch_size, shuffle=True)
-    n_epochs = ceil(iterations / len(train_loader))
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    ce_loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-66)
-
-    model.train()
-    avg_loss = torch.tensor([]).to(device)
-    total_steps = 0
-    running_batch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_epoch_loss = torch.tensor([], dtype=torch.float).to(device)
-    running_20b_loss = torch.tensor([], dtype=torch.float).to(device)
-
-    def noise_schedule(ranges, p=0.1):
-        head_positions = []
-        for r in ranges:
-            r_list = list(r)
-            n = len(r_list)
-            if n == 0:
+    with msa_path.open() as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
                 continue
-            probs = torch.tensor([1 - p, p])
-            tosses = torch.multinomial(probs.repeat(n, 1), 1).squeeze(1)
-            # Get positions where toss == 1 (heads)
-            heads = [r_list[i] for i in range(n) if tosses[i].item() == 1]
-            head_positions.extend(heads)
-        return torch.tensor(head_positions, dtype=torch.long)
-
-    ongoing_range_dict = {}
-
-    def mine_ranges(ranges, indices):
-
-        return_range_list = []
-        for idx, global_idx in enumerate(indices):
-            if global_idx in ongoing_range_dict:
-                return_range_list.append(ongoing_range_dict[global_idx])
+            if line.startswith(">"):
+                saw_fasta = True
+                if current:
+                    sequences.append("".join(current))
+                    current = []
+                continue
+            if saw_fasta:
+                current.append(line)
             else:
-                rng = ranges[idx]
-                rng = [x.split("_") for x in rng.split("x")]
-                rng = [range(int(x[0]), int(x[1])) if len(x) == 2 else range(int(x[0]), int(x[0]) + 1) for x in rng]
-                return_range_list.append(rng)
-                ongoing_range_dict[global_idx] = rng
+                sequences.append(line)
 
-        return return_range_list
+    if current:
+        sequences.append("".join(current))
+
+    sequences = [normalize_aligned_sequence(seq) for seq in sequences]
+    if not sequences:
+        raise ValueError(f"no sequences found in {msa_path}")
+
+    lengths = {len(seq) for seq in sequences}
+    if len(lengths) != 1:
+        raise ValueError(f"aligned sequences must all have the same length, got {sorted(lengths)}")
+
+    return sequences
 
 
-    mask_token = torch.tensor(model.tokenizer.encode("<mask>")).to(device)
-        
-    for epoch in range(n_epochs):
-        epoch_loss = torch.tensor(0.0).to(device)
-        iter_20b_loss = torch.tensor(0.0).to(device)
-        for step, batch in enumerate(train_loader):
-            x = batch[0].to(device)
-            y = batch[1].to(device)                  
-            # Ensure y is on CPU before converting to numpy, for CUDA compatibility
-            y_cpu = y.detach().cpu().numpy()
+def normalize_aligned_sequence(sequence: str) -> str:
+    return sequence.strip().upper().replace("_", "-")
 
-            pad_regions = train_test_dataset.train_dataset.get_pad_regions()[y_cpu].tolist()
 
-            ranges = mine_ranges(
-                #train_test_dataset.train_dataset.sequence_dataframe["pad_regions"].iloc[y_cpu].to_list(),
-                pad_regions,
-                y_cpu
-            )
-            # Apply random noise to the sequence
-            mask_pos_matrix = torch.stack([torch.nn.functional.one_hot(noise_schedule(rng), x.shape[1]).sum(dim=0) for rng in ranges], dim=0)
-            mask_pos_matrix = mask_pos_matrix.to(device)
+class MsaMlmDataset(Dataset):
+    def __init__(self, sequences: Iterable[str], encode):
+        self.encoded = [torch.tensor(encode(seq), dtype=torch.long) for seq in sequences]
+        if not self.encoded:
+            raise ValueError("cannot train on an empty sequence set")
 
-            # Place masks instead of noise
-            masked_sequence = (x - x * mask_pos_matrix) + mask_pos_matrix * mask_token
+    def __len__(self) -> int:
+        return len(self.encoded)
 
-            logits = model(masked_sequence)
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        return self.encoded[idx]
 
-            # Get the ground truth labels on masked positiosn
-            gt_labels = (((torch.ones(x.shape, device=device) - mask_pos_matrix) * -66) + (x * mask_pos_matrix)).view(-1)
-            total_loss = ce_loss_fn(logits.view(-1, len(model.vocab)), gt_labels.to(torch.long))
 
-            epoch_loss += total_loss.item()
-            iter_20b_loss += total_loss.item()
+def _tokenizer_id(tokenizer, names: tuple[str, ...], attrs: tuple[str, ...]) -> int | None:
+    for attr in attrs:
+        value = getattr(tokenizer, attr, None)
+        if value is not None:
+            return int(value)
 
-            total_loss.backward()        
+    for name in names:
+        if hasattr(tokenizer, "get_idx"):
+            try:
+                value = tokenizer.get_idx(name)
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+
+        if hasattr(tokenizer, "convert_tokens_to_ids"):
+            try:
+                value = tokenizer.convert_tokens_to_ids(name)
+                unk = getattr(tokenizer, "unk_token_id", None)
+                if value is not None and value != unk:
+                    return int(value)
+            except Exception:
+                pass
+
+        if hasattr(tokenizer, "token_to_id"):
+            try:
+                value = tokenizer.token_to_id(name)
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+
+        if hasattr(tokenizer, "get_vocab"):
+            try:
+                vocab = tokenizer.get_vocab()
+                if name in vocab:
+                    return int(vocab[name])
+            except Exception:
+                pass
+
+    return None
+
+
+def resolve_token_ids(tokenizer) -> dict[str, int | None]:
+    return {
+        "pad": _tokenizer_id(tokenizer, ("<pad>", "[PAD]"), ("padding_idx", "pad_token_id")),
+        "mask": _tokenizer_id(tokenizer, ("<mask>", "[MASK]", "<mask_1>"), ("mask_idx", "mask_token_id")),
+        "cls": _tokenizer_id(tokenizer, ("<cls>", "[CLS]", "<s>"), ("cls_idx", "cls_token_id")),
+        "bos": _tokenizer_id(tokenizer, ("<|bos|>", "<s>"), ("bos_token_id",)),
+        "eos": _tokenizer_id(tokenizer, ("<eos>", "<|eos|>", "[SEP]", "</s>"), ("eos_idx", "eos_token_id", "sep_token_id")),
+        "gap": _tokenizer_id(tokenizer, ("-", "_"), ()),
+    }
+
+
+def collate_encoded(batch: list[torch.Tensor], pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+    max_len = max(seq.numel() for seq in batch)
+    input_ids = torch.full((len(batch), max_len), pad_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(batch), max_len), dtype=torch.long)
+    for i, seq in enumerate(batch):
+        input_ids[i, : seq.numel()] = seq
+        attention_mask[i, : seq.numel()] = 1
+    return input_ids, attention_mask
+
+
+def mask_batch(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    token_ids: dict[str, int | None],
+    mask_probability: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    mask_id = token_ids["mask"]
+    if mask_id is None:
+        raise ValueError("selected PLM tokenizer does not expose a mask token")
+
+    candidates = attention_mask.bool()
+    for key in ("pad", "cls", "bos", "eos", "gap"):
+        token_id = token_ids.get(key)
+        if token_id is not None:
+            candidates &= input_ids.ne(int(token_id))
+
+    random_mask = torch.rand(input_ids.shape, device=input_ids.device) < mask_probability
+    masked_positions = random_mask & candidates
+
+    for row_idx in range(masked_positions.shape[0]):
+        if not masked_positions[row_idx].any() and candidates[row_idx].any():
+            valid = torch.where(candidates[row_idx])[0]
+            masked_positions[row_idx, valid[torch.randint(valid.numel(), (1,), device=input_ids.device)]] = True
+
+    labels = input_ids.clone()
+    labels[~masked_positions] = IGNORE_INDEX
+
+    masked_input_ids = input_ids.clone()
+    masked_input_ids[masked_positions] = int(mask_id)
+    return masked_input_ids, labels
+
+
+def forward_logits(forward_func, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    try:
+        logits, _hidden = forward_func(input_ids, attention_mask=attention_mask)
+    except TypeError:
+        logits, _hidden = forward_func(input_ids)
+
+    if logits is None:
+        raise ValueError(
+            "selected PLM wrapper returned logits=None; MLM fine-tuning requires a model with an LM head"
+        )
+    return logits
+
+
+def replace_linear_with_lora(module: torch.nn.Module, r: int, alpha: int, dropout: float) -> None:
+    import loralib as lora
+
+    for name, child in list(module.named_children()):
+        if isinstance(child, torch.nn.Linear):
+            replacement = lora.Linear(
+                child.in_features,
+                child.out_features,
+                r=r,
+                lora_alpha=alpha,
+                lora_dropout=dropout,
+                bias=child.bias is not None,
+            ).to(child.weight.device)
+            replacement.weight.data.copy_(child.weight.data)
+            if child.bias is not None:
+                replacement.bias.data.copy_(child.bias.data)
+            setattr(module, name, replacement)
+        else:
+            replace_linear_with_lora(child, r=r, alpha=alpha, dropout=dropout)
+
+
+def configure_trainable_parameters(
+    model: torch.nn.Module,
+    mode: str,
+    lora_r: int,
+    lora_alpha: int,
+    lora_dropout: float,
+) -> None:
+    if mode == "full":
+        for param in model.parameters():
+            param.requires_grad = True
+        return
+
+    if mode != "lora":
+        raise ValueError("mode must be 'full' or 'lora'")
+
+    import loralib as lora
+
+    replace_linear_with_lora(model, r=lora_r, alpha=lora_alpha, dropout=lora_dropout)
+    lora.mark_only_lora_as_trainable(model)
+
+
+def trainable_state_dict(model: torch.nn.Module, mode: str) -> dict[str, torch.Tensor]:
+    if mode == "full":
+        return {name: value.detach().cpu() for name, value in model.state_dict().items()}
+    return {name: value.detach().cpu() for name, value in model.state_dict().items() if "lora_" in name}
+
+
+def output_files(output_path: str | Path, mode: str) -> tuple[Path, Path, Path]:
+    output_path = Path(output_path)
+    if output_path.suffix == ".pt":
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        weights_path = output_path
+        config_path = output_path.with_suffix(".config.json")
+        losses_path = output_path.with_suffix(".losses.pt")
+    else:
+        output_path.mkdir(parents=True, exist_ok=True)
+        weights_name = "final_model.pt" if mode == "full" else "lora_weights.pt"
+        weights_path = output_path / weights_name
+        config_path = output_path / "training_config.json"
+        losses_path = output_path / "losses.pt"
+    return weights_path, config_path, losses_path
+
+
+def fine_tune_mlm(
+    plm_name: str,
+    msa_path: str | Path,
+    output_path: str | Path,
+    mode: str = "full",
+    plm_base_path: str | Path | None = None,
+    epochs: int = 3,
+    batch_size: int = 8,
+    lr: float = 1e-5,
+    weight_decay: float = 0.0,
+    mask_probability: float = 0.15,
+    max_sequences: int | None = None,
+    seed: int = 0,
+    device: str = "auto",
+    lora_r: int = 8,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.0,
+    num_workers: int = 0,
+    print_every: int = 10,
+) -> dict[str, object]:
+    if mode == "non_lora":
+        mode = "full"
+    if mode not in {"full", "lora"}:
+        raise ValueError("mode must be one of: full, non_lora, lora")
+
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    if device == "auto":
+        resolved_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        resolved_device = torch.device(device)
+
+    if plm_base_path is None:
+        plm_base_path = Path(__file__).resolve().parents[1]
+
+    print(f"[new_trainer] plm_base_path={plm_base_path}")
+    print(f"[new_trainer] loading PLM={plm_name}")
+    plm_init(str(plm_base_path))
+    plm_obj = load_model(plm_name)
+    model = plm_obj.get_model().to(resolved_device)
+    tokenizer = plm_obj.get_tokenizer()
+    encode = plm_obj.get_encode()
+    forward_func = plm_obj.get_forward()
+    token_ids = resolve_token_ids(tokenizer)
+
+    if token_ids["mask"] is None:
+        raise ValueError(f"{plm_name} tokenizer has no mask token; cannot run MLM fine-tuning")
+    if token_ids["pad"] is None:
+        token_ids["pad"] = 0
+
+    sequences = read_aligned_sequences(msa_path)
+    if max_sequences is not None:
+        sequences = sequences[:max_sequences]
+
+    print(f"[new_trainer] loaded aligned sequences={len(sequences)} length={len(sequences[0])}")
+    print(f"[new_trainer] token ids={token_ids}")
+    print(f"[new_trainer] mode={mode} device={resolved_device} epochs={epochs} batch_size={batch_size}")
+
+    configure_trainable_parameters(model, mode, lora_r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout)
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"[new_trainer] trainable_params={trainable_params} total_params={total_params}")
+
+    dataset = MsaMlmDataset(sequences, encode)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        collate_fn=lambda batch: collate_encoded(batch, int(token_ids["pad"])),
+    )
+
+    optimizer = torch.optim.AdamW(
+        [param for param in model.parameters() if param.requires_grad],
+        lr=lr,
+        weight_decay=weight_decay,
+    )
+
+    model.train()
+    losses: list[float] = []
+    global_step = 0
+    for epoch in range(1, epochs + 1):
+        epoch_losses: list[float] = []
+        for batch_idx, (input_ids, attention_mask) in enumerate(loader, start=1):
+            input_ids = input_ids.to(resolved_device)
+            attention_mask = attention_mask.to(resolved_device)
+            masked_input_ids, labels = mask_batch(input_ids, attention_mask, token_ids, mask_probability)
+
+            optimizer.zero_grad(set_to_none=True)
+            logits = forward_logits(forward_func, masked_input_ids, attention_mask)
+            loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1), ignore_index=IGNORE_INDEX)
+            loss.backward()
             optimizer.step()
 
-            total_steps += 1
-            running_batch_loss = torch.cat([running_batch_loss, total_loss.detach().reshape(-1)])
+            loss_value = float(loss.detach().cpu())
+            losses.append(loss_value)
+            epoch_losses.append(loss_value)
+            global_step += 1
 
-            if (step + 1) % 20 == 0:
-                total_steps += 1
-                iter_20b_loss = iter_20b_loss /  20
-                running_20b_loss = torch.cat([running_20b_loss, iter_20b_loss.detach().reshape(-1)])
-                iter_20b_loss = torch.tensor(0, dtype=torch.float).to(device)
-                plt.plot(range(1, running_20b_loss.shape[0] + 1), running_20b_loss.cpu().detach().numpy())
-                plt.show()
-            #print("[E%d I%d] %.3f { Triplet :%.3f}" % (epoch, step, total_loss, trip_loss))
-            # print(torch.unique(a[2].softmax(dim=1).argmax(dim=1), return_counts=True))
-            print("[E%d I%d] %.3f " % (epoch, step, total_loss))
-            if total_steps % 1000 == 0:
-                print("\t\tCheckpoint [%d]" % total_steps)
-                torch.save(model.state_dict(), checkpoints_dir + "/checkpoint_model_%d.pt" % total_steps)
-                torch.save(running_batch_loss.cpu().detach(), save_path + "/batch_loss.pt")
-                torch.save(running_epoch_loss.cpu().detach(), save_path + "/epoch_loss.pt")
-                torch.save(running_20b_loss.cpu().detach(), save_path + "/20b_loss.pt")
+            if print_every and (batch_idx == 1 or batch_idx % print_every == 0):
+                print(
+                    f"[new_trainer] epoch={epoch}/{epochs} batch={batch_idx}/{len(loader)} "
+                    f"step={global_step} loss={loss_value:.6f}"
+                )
 
-        running_epoch_loss = torch.cat([running_epoch_loss, epoch_loss.detach().reshape(-1)])
+        print(f"[new_trainer] epoch={epoch}/{epochs} mean_loss={sum(epoch_losses) / len(epoch_losses):.6f}")
 
-    torch.save(model.state_dict(), save_path + "/final_model.pt")
-    torch.save(running_batch_loss.cpu().detach(), save_path + "/batch_loss.pt")
-    torch.save(running_epoch_loss.cpu().detach(), save_path + "/epoch_loss.pt")
-    torch.save(running_20b_loss.cpu().detach(), save_path + "/20b_loss.pt")
-    print(f"Model saved to {save_path}")
-    return model
+    weights_path, config_path, losses_path = output_files(output_path, mode)
+    torch.save(trainable_state_dict(model, mode), weights_path)
+    torch.save(torch.tensor(losses), losses_path)
 
-def train_evaluate_plms(config):
-    ref_seq = config["ref_seq"]
+    config = {
+        "plm_name": plm_name,
+        "msa_path": str(msa_path),
+        "output_path": str(output_path),
+        "weights_path": str(weights_path),
+        "mode": mode,
+        "plm_base_path": str(plm_base_path),
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "mask_probability": mask_probability,
+        "max_sequences": max_sequences,
+        "seed": seed,
+        "device": str(resolved_device),
+        "lora_r": lora_r,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "trainable_params": trainable_params,
+        "total_params": total_params,
+        "n_sequences": len(sequences),
+        "aligned_length": len(sequences[0]),
+        "n_steps": global_step,
+    }
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
 
-    # Check if "plm_name" exists in config, else use default "esm2_t12_35M_UR50D"
-    if "plm_name" in config and config["plm_name"]:
-        plm_name = config["plm_name"]
-    else:
-        print("Warning: 'plm_name' not found in config. Using default 'esm2_t12_35M_UR50D'.")
-        plm_name = "esm2_t12_35M_UR50D"
+    print(f"[new_trainer] saved weights={weights_path}")
+    print(f"[new_trainer] saved config={config_path}")
+    print(f"[new_trainer] saved losses={losses_path}")
 
-
-    train_indices_func = lambda sdf: get_indices(
-        sdf, 
-        config["train_indices"], 
-        nmuts_column=config["nmuts_column"],
-        rev=config["train_indices_rev"]
-    )
-
-    test_indices_func = lambda sdf: get_indices(
-        sdf, 
-        config["test_indices"], 
-        nmuts_column=config["nmuts_column"],
-        rev=config["test_indices_rev"]
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
-    print(f"ֿ\t\t[INFO] Using device: {device}")
-
-    emb_only = config["train_type"] == "triplet"
-    
-    model = plmEmbeddingModel(
-        plm_name=plm_name,
-        emb_only = emb_only
-        # opmode="pos",
-        # hidden_layers=[516,256],
-        # activation="relu",
-        # layer_norm=False,
-        # activation_on_last_layer=False,
-        # specific_pos=config["pos_to_use"],
-        # device=device
-    ).to(device)
-
-    # Load weights for plm backbone only if config has load_weights set to True
-    if "load_weights" in config and config["load_weights"]:
-        backbone_weights = torch.load(config["weights_path"], map_location=device)
-        backbone_weights = {k.replace("plm.", "", 1): v for k, v in backbone_weights.items() if "plm." in k}
-        model.plm.load_state_dict(backbone_weights, strict=True)
-
-    train_test_dataset = PREActivityDataset(
-        train_project_name="triplet_training",
-        evaluation_path=config["save_path"],
-        dataset_path=config["dataset_path"],
-        train_indices=train_indices_func,
-        test_indices=test_indices_func,
-        encoding_function=model.encode,
-        encoding_identifier=plm_name,
-        cache=True,
-        lazy_load=True,
-        sequence_column_name=config["sequence_column_name"],
-        label_column_name=config["label_column_name"],
-        ref_seq=ref_seq,
-        labels_dtype=torch.float32,
-        device=device
-    )
-
-    if config["train"]:
-
-        model.plm.token_dropout = config["train_drop_tokens"]
-        
-        model = \
-            train_plm_triplet_model(
-                plm_name=plm_name,
-                train_type=config["train_type"],
-                save_path=config["save_path"],
-                train_test_dataset=train_test_dataset,
-                pos_to_use=config["pos_to_use"],
-                batch_size=config["batch_size"],
-                iterations=config["iterations"],
-                lr=float(config["lr"]),
-                device=device,
-                model=model, 
-            )
-
-    model.plm.token_dropout = config["inference_drop_tokens"]
-
-    if config["evaluate_train"] or config["evaluate_test"]:
-        train_test_dataset.evaluate(model,
-                                    embeddings_evaluate_function, 
-                                    embeddings_finalize_function,
-                                    eval_train=config["evaluate_train"],
-                                    eval_test=config["evaluate_test"],
-                                    internal_batch_size=config["batch_size"])
-
-# EPINNET DATASET:
-def train_evaluate_epinnet(config):
-
-    # Define train/test split functions
-    train_indices_func = lambda sdf: get_indices(
-        sdf, 
-        config["train_indices"], 
-        nmuts_column=config["nmuts_column"],
-        rev=config["train_indices_rev"]
-    )
-    
-    test_indices_func = lambda sdf: get_indices(
-        sdf, 
-        config["test_indices"], 
-        nmuts_column=config["nmuts_column"],
-        rev=config["test_indices_rev"]
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Load the sequence dataframe and create encodings
-    sequence_df = pd.read_csv(config["dataset_path"])
-    encodings = torch.tensor(get_one_hot_encoding(sequence_df, config["first_column_name"], config["last_column_name"]), dtype=torch.float)
-
-    # Initialize EpiNNet model
-    epinnet_model = EpiNNet(
-        d_in=encodings.shape[1],  # Example input dimension, adjust as needed
-        hidden_layers=[512, 256],  # Example hidden layers, adjust as needed
-        d_out=2,  # Example output dimension for binary classification
-        activation="relu",
-        device=device
-    ).to(device)
-    
-
-    if "load_weights" in config and config["load_weights"]:
-        backbone_weights = torch.load(config["weights_path"], map_location=device)
-        epinnet_model.load_state_dict(backbone_weights)
-
-    train_test_dataset = PREActivityDataset(
-        train_project_name="triplet_training",
-        evaluation_path=config["save_path"],
-        dataset_path=config["dataset_path"],
-        train_indices=train_indices_func,
-        test_indices=test_indices_func,
-        encoding_function=None,
-        encoding_identifier=None,
-        external_encoding=encodings,
-        cache=True,
-        lazy_load=True,
-        sequence_column_name='full_seq',
-        label_column_name='inactive',
-        ref_seq=config["ref_seq"],
-        labels_dtype=torch.float32,
-        device=device
-    )
-
-    if config["train"]:
-
-        epinnet_model =\
-            train_epinnet(
-                train_test_dataset=train_test_dataset,
-                save_path=config["save_path"],
-                encodings=encodings,
-                model=epinnet_model,
-                device=device,
-                lr=float(config["lr"]),
-                iterations=int(config["iterations"]),
-                batch_size=int(config["batch_size"]),
-            )
-
-        
-    if config["evaluate_train"] or config["evaluate_test"]:
-        train_test_dataset.evaluate(epinnet_model,   
-                                    epinnet_evaluate_function,
-                                    epinnet_finalize_function,
-                                    eval_train=config["evaluate_train"],
-                                    eval_test=config["evaluate_test"])
-
-def train_evaluate_msa_backbone(config):
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Check if "plm_name" exists in config, else use default "esm2_t12_35M_UR50D"
-    if "plm_name" in config and config["plm_name"]:
-        plm_name = config["plm_name"]
-    else:
-        print("Warning: 'plm_name' not found in config. Using default 'esm2_t12_35M_UR50D'.")
-        plm_name = "esm2_t12_35M_UR50D"
-
-    msa_backbone_model =\
-     plmEmbeddingModel(
-        plm_name=plm_name,
-        emb_only = False
-        # opmode="pos",
-        # logits_only = True,
-        # hidden_layers=[516,256],
-        # activation="relu",
-        # layer_norm=False,
-        # activation_on_last_layer=False,
-        # device=device
-    ).to(device)
+    return config
 
 
-    def encode_aligned_seq(seq):
-        seq = seq.replace("-", "<pad>")
-        return msa_backbone_model.tokenizer.encode(seq)
-
-    # Prepare dataset (assuming similar interface as PREActivityDataset)
-    train_test_dataset = PREActivityDataset(
-        train_project_name="triplet_training",
-        evaluation_path=config["save_path"],
-        dataset_path=config["dataset_path"],
-        train_indices=None,
-        test_indices=None,
-        encoding_function=encode_aligned_seq,
-        encoding_identifier=plm_name,
-        cache=True,
-        lazy_load=True,
-        sequence_column_name=config["sequence_column_name"],
-        pad_region_label=config["pad_region_label"],
-        label_column_name=None, # This should be none so the labels would be just the indices
-        ref_seq=config["ref_seq"],
-        labels_dtype=torch.float32,
-        device=device
-    )
-
-    if config["train"]:
-        msa_backbone_model.train()
-        msa_backbone_model = train_msa_backbone(
-                plm_name=plm_name,
-                train_test_dataset=train_test_dataset,
-                save_path=config["save_path"],                
-                batch_size=config["batch_size"],
-                iterations=config["iterations"],
-                lr=float(config["lr"]),
-                device=device,
-                model=msa_backbone_model, 
-            )
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Simple aligned-MSA MLM fine-tuning.")
+    parser.add_argument("--plm_name", required=True)
+    parser.add_argument("--mode", choices=["full", "non_lora", "lora"], default="full")
+    parser.add_argument("--msa_path", required=True)
+    parser.add_argument("--output_path", required=True)
+    parser.add_argument("--plm_base_path", default=None)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--mask_probability", type=float, default=0.15)
+    parser.add_argument("--max_sequences", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--lora_r", type=int, default=8)
+    parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--lora_dropout", type=float, default=0.0)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--print_every", type=int, default=10)
+    return parser.parse_args()
 
 
-    # TODO: Add evaluation function   
-    # if config["evaluate_train"] or config["evaluate_test"]:
-    #     train_test_dataset.evaluate(
-    #         msa_backbone_model,
-    #         #msa_backbone_evaluate_function,
-    #         #msa_backbone_finalize_function,
-    #         eval_train=config.get("evaluate_train", False),
-    #         eval_test=config.get("evaluate_test", False)
-    #     )
+def main() -> int:
+    args = parse_args()
+    fine_tune_mlm(**vars(args))
+    return 0
 
 
-
-
-
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument("--cache_path")
     parser.add_argument(
         "--scorer_script",
-        default=str(Path(__file__).resolve().with_name("sequence_embedding_scoring_analysis.py")),
+        default=str(Path(__file__).resolve().with_name("exetnsive_model_selection.py")),
     )
     parser.add_argument("--conda_env")
     parser.add_argument("--python_executable", default="python")

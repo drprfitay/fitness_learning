@@ -18,7 +18,7 @@ import torch
 from sklearn.manifold import TSNE
 from sklearn.neighbors import NearestNeighbors
 
-from utils_for_analysis import DATASET_PATHS, num_muts_column_name, positions
+from utils import DATASET_PATHS, num_muts_column_name, positions
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent

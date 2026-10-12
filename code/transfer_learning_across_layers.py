@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from scipy.stats import spearmanr
 from torch.utils.data import DataLoader, TensorDataset
+from utils import root_dataset_path
 
 
 # ============================================================
@@ -786,7 +787,7 @@ if __name__ == "__main__":
     train_muts = args.train_muts
     prefix = "delta" if delta else "regular"
 
-    data_path = "/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/data/oracle_transfer_learning"
+    data_path = "%s/oracle_transfer_learning" % root_dataset_path
     pickle_file_path = f"{data_path}/{dataset}_for_tl.pkl"
     output_csv_path = f"{data_path}/{dataset}_trained_on_{train_muts}_{prefix}_tl_results.csv"
 

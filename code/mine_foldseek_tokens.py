@@ -18,14 +18,13 @@ import tempfile
 import numpy as np
 import pandas as pd
 
+from utils import DATASET_PATHS, full_seq_column_name, num_muts_column_name
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(CODE_DIR)
 NOTEBOOKS_DIR = os.path.join(PROJECT_DIR, "notebooks")
 
 
-# Edit these values when running the file directly, or call
-# make_foldseek_tokens_for_dataset(...) from a notebook.
 DATASET_NAME = "his2"
 CSV_PATH = None
 PDB_PATH = None
@@ -33,52 +32,6 @@ OUTPUT_PATH = None
 SAVE_OUTPUT = True
 PRINT_TOKENS = False
 SAVE_TEXT_FILES = True
-
-
-DATASET_PATHS = {
-    "gfp": "data/gfp/gfp_dataset_10mut.csv",
-    "lov": "data/lov/lov.csv",
-    "pard3": "data/pard3/pard3.csv",
-    "gcn4": "data/gcn4/gcn4.csv",
-    "pte": "data/pte/pte.csv",
-    "nmt": "data/nmt/nmt.csv",
-    "aamyl": "data/aamyl/aamyl.csv",
-    "trpb": "data/trpb/trpb.csv",
-    "his": "data/his/his.csv",
-    "his2": "data/his2/his2.csv",
-    "his5": "data/his5/his5.csv",
-    "casp": "data/casp/casp.csv",
-}
-
-FULL_SEQ_COLUMN_NAME = {
-    "gcn4": "full_seq",
-    "pard3": "full_seq",
-    "lov": "full_seq",
-    "gfp": "full_seq",
-    "pte": "full_seq",
-    "aamyl": "full_seq",
-    "nmt": "full_seq",
-    "trpb": "full_seq",
-    "his": "full_seq",
-    "his2": "full_seq",
-    "his5": "full_seq",
-    "casp": "full_seq",
-}
-
-NUM_MUTS_COLUMN_NAME = {
-    "pard3": "num_muts",
-    "lov": "num_muts",
-    "gfp": "num_muts",
-    "pte": "num_muts",
-    "gcn4": "num_muts",
-    "nmt": "num_muts",
-    "aamyl": "num_muts",
-    "trpb": "num_muts",
-    "his": "num_muts",
-    "his2": "num_muts",
-    "his5": "num_muts",
-    "casp": "num_muts",
-}
 
 
 def resolve_dataset_csv(dataset_name, csv_path=None):
@@ -114,7 +67,7 @@ def resolve_pdb_path(csv_path, pdb_path=None):
 
 def get_dataset_columns(dataset_name, df, sequence_col=None, num_muts_col=None):
     if sequence_col is None:
-        sequence_col = FULL_SEQ_COLUMN_NAME.get(dataset_name)
+        sequence_col = full_seq_column_name.get(dataset_name)
         if sequence_col is None:
             for candidate in ("full_seq", "seq", "full_sequence", "sequence"):
                 if candidate in df.columns:
@@ -122,7 +75,7 @@ def get_dataset_columns(dataset_name, df, sequence_col=None, num_muts_col=None):
                     break
 
     if num_muts_col is None:
-        num_muts_col = NUM_MUTS_COLUMN_NAME.get(dataset_name, "num_muts")
+        num_muts_col = num_muts_column_name.get(dataset_name, "num_muts")
 
     if sequence_col not in df.columns:
         raise KeyError("Could not find sequence column %r in dataset" % sequence_col)

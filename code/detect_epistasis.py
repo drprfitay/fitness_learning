@@ -39,11 +39,12 @@ warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 from random import sample
 
-from utils_for_analysis import (
+from utils import (
     calculate_ss_for_df_and_factors,
     load_df_all,
     load_df_with_budget,
     discretized_parameter_scale,
+    root_dataset_path,
     xlabel_dict,
     ylabel_dict,
     title_fontsize,
@@ -58,7 +59,6 @@ from utils_for_analysis import (
     num_muts_column_name,
     DATASET_PATHS
 )
-
 
 
 def get_relevant_columns_gfp_protgym(df, first_col, last_col):
@@ -1201,7 +1201,7 @@ def run_epistasis_experiments(
     return pd.DataFrame(result_rows)
 
 
-output_dir = "/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/data/merged_datasets/linear_baslines"
+output_dir = "%s/linear_baslines" % root_dataset_path
 
 datasets_to_run = [
     "casp",

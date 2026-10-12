@@ -171,25 +171,26 @@ def load_existing_result_columns(path, expected_rows, resume_missing_models):
     )
     return [(col, df[col].to_numpy()) for col in df.columns], set(df.columns)
 
-datasets = {
-    # "lov": "./data/lov/lov.csv",
-    # "pard3": "./data/pard3/pard3.csv",
-    # "gcn4": "./data/gcn4/gcn4.csv",
-    # "nmt": "./data/nmt/nmt_full_seq.csv",
-    "gfp": "./data/gfp/gfp_dataset_10mut.csv",
-    #"pte": "./data/pte/pte.csv",
-    #"aamyl": "./data/aamyl/aamyl.csv",
-    #"his": "./data/his/his.csv",
-    # "his2": "./data/his2/his2.csv",
-    # "his5": "./data/his5/his5.csv",
-    #"casp": "./data/casp/casp.csv"
-}
+
+working_datasets = [
+    "lov",
+    "pard3",
+    "gcn4",
+    "nmt",
+    "gfp",
+    "pte",
+    # "aamyl",
+    # "his",
+    "his2",
+    "his5",
+    "casp"
+]
 
 
-
-for dataset_to_use in datasets.keys():
-    dataset_cache_path = "%s_cache/misc/" % datasets[dataset_to_use].split(".csv")[0]
-    df = pd.read_csv(datasets[dataset_to_use])
+for dataset_to_use in working_datasets:
+    working_path = DATASET_PATHS[dataset_to_use]
+    dataset_cache_path = "%s_cache/misc/" % (working_path.split(".csv")[0])
+    df = pd.read_csv(working_path)
     working_positions = get_positions[dataset_to_use](df)
     working_positions = torch.tensor([int(p) for p in working_positions])
     wt_idx = np.where(df[num_muts_column_name[dataset_to_use]] == 0)[0]

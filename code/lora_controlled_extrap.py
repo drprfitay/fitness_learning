@@ -30,9 +30,9 @@ CODE_DIR, ROOT_DIR = find_project_paths()
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
-from new_trainer import resolve_token_ids
+from trainer import resolve_token_ids
 from plm_base import plmEmbeddingModel, plm_init
-from sequence_embedding_scoring_analysis import MLPScorer, evaluate_predictions
+from exetnsive_model_selection import MLPScorer, evaluate_predictions
 
 
 RESULT_COLUMNS = [

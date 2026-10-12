@@ -234,7 +234,7 @@ def embeddings_evaluate_function(model, data, agg_dict, device=torch.device("cpu
 
         if normalize_embeddings:
             print("[INFO]: Normalizing averaged embeddings")
-            emb = torch.nn.functional.normalize(emb, dim=1)
+            emb = torch.nn.functional.normalize(emb, dim=-1)
 
     if calc_triplets and "trip_loss" not in agg_dict.keys():
         agg_dict['trip_loss'] = torch.tensor([], dtype=torch.float, device=torch.device("cpu"))

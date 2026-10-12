@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import argparse
 
 import pickle
+from utils import root_dataset_path
 import numpy as np
 import pandas as pd
 import torch
@@ -616,7 +617,7 @@ if __name__ == "__main__":
     #test_muts = args.test_muts
     train_muts = args.train_muts
 
-    data_path = "/home/labs/fleishman/itayta/new_fitness_repo/fitness_learning/notebooks/data/oracle_transfer_learning"
+    data_path = "%s/oracle_transfer_learning" % root_dataset_path
     pickle_file_path = f"{data_path}/{dataset}_for_tl.pkl"
     output_csv_path = f"{data_path}/{dataset}_trained_on_{train_muts}_ohe_results.csv"
 
