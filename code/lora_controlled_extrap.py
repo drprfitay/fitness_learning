@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Controlled-extrapolation LoRA fine-tuning for mutation-order splits."""
+"""Controlled-extrapolation LoRA fine-tuning for mutation-order splits.
+
+For lower GPU memory use, opt into --gradient_checkpointing and --eval_bf16,
+and reduce --batch_size / --eval_batch_size. Increase gradient accumulation
+to retain the desired effective training batch size. Existing defaults remain.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.checkpoint import checkpoint
 
 def find_project_paths():
     script_path = Path(__file__).resolve()
@@ -145,6 +151,7 @@ class LoraSupervisedModel(nn.Module):
         self.backbone = backbone
         self.head = head
         self.pooling_positions = pooling_positions
+        self.eval_bf16 = False
 
     def forward(self, input_ids, attention_mask=None):
         try:
@@ -358,6 +365,33 @@ def iter_backbone_linear_modules(model):
             if isinstance(module, nn.Linear):
                 full_name = "%s.%s" % (root_name, name) if name else root_name
                 yield full_name, module
+
+
+def enable_gradient_checkpointing(model):
+    """Recompute transformer blocks during backward; keep parameter names intact.
+
+    Non-reentrant checkpointing supports frozen embedding inputs and preserves
+    RNG state for LoRA dropout. Evaluation and no-grad checks use normal forward.
+    """
+    def checkpointed_forward(layer):
+        original_forward = layer.forward
+
+        def forward(*inputs, **kwargs):
+            if layer.training and torch.is_grad_enabled():
+                return checkpoint(original_forward, *inputs, use_reentrant=False, **kwargs)
+            return original_forward(*inputs, **kwargs)
+
+        return forward
+
+    count = 0
+    for _name, layers in transformer_backbone_roots(model):
+        for layer in layers:
+            if getattr(layer, "_lora_gradient_checkpointing", False):
+                continue
+            layer.forward = checkpointed_forward(layer)
+            layer._lora_gradient_checkpointing = True
+            count += 1
+    print("Gradient checkpointing enabled for %d transformer blocks" % count)
 
 
 def resolve_named_lora_targets(model, requested_targets):
@@ -658,15 +692,18 @@ def initialize_plm_lora_head(
             diagnostic_indices,
             token_ids,
             device,
-            max_examples=min(args.eval_batch_size, 8),
+            max_examples=min(args.eval_batch_size, args.batch_size, 8),
         )
     _resolved_targets, matched_modules = configure_lora_parameters(backbone.plm, args)
     finish_lora_initialization_equivalence(backbone, equivalence_state)
+    if getattr(args, "gradient_checkpointing", False):
+        enable_gradient_checkpointing(backbone.plm)
     hidden_dim = infer_hidden_dim(backbone)
     head = MLPScorer(input_dim=int(hidden_dim), output_dim=int(output_dim), hidden_layers=[64], dropout=0.0).to(device)
     for param in head.parameters():
         param.requires_grad = True
     model = LoraSupervisedModel(backbone, head, pooling_positions=pooling_positions).to(device)
+    model.eval_bf16 = getattr(args, "eval_bf16", False)
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     print_lora_module_summary(
@@ -734,10 +771,14 @@ def evaluate_split(model, encoded, labels, indices, task_type, token_ids, eval_b
     losses = []
     predictions = []
     model.eval()
+    use_bf16 = getattr(model, "eval_bf16", False) and supports_bf16(device)
     for input_ids, attention_mask, y in loader:
         input_ids = input_ids.to(device)
         attention_mask = attention_mask.to(device)
-        output = model(input_ids, attention_mask=attention_mask)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+            output = model(input_ids, attention_mask=attention_mask)
+        if use_bf16:
+            output = output.float()  # FP32 metrics/loss and NumPy-compatible predictions.
         loss = loss_for_output(output, y, task_type, loss_fn, device)
         losses.append(float(loss.detach().cpu()))
         if task_type == "classification":
@@ -1068,6 +1109,8 @@ def print_run_config(args, device):
     print("  batch_size: %d" % args.batch_size)
     print("  eval_batch_size: %d" % args.eval_batch_size)
     print("  gradient_accumulation_steps: %d" % args.gradient_accumulation_steps)
+    print("  gradient_checkpointing: %s" % getattr(args, "gradient_checkpointing", False))
+    print("  eval_bf16: %s" % (getattr(args, "eval_bf16", False) and supports_bf16(device)))
     print("  seed: %d" % args.seed)
     print("  device: %s" % device)
     print("  bf16_supported: %s" % supports_bf16(device))
@@ -1110,6 +1153,8 @@ def parse_args():
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--gradient_clip_norm", type=float, default=1.0)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    parser.add_argument("--gradient_checkpointing", action="store_true", help="Recompute transformer blocks in backward to reduce training memory")
+    parser.add_argument("--eval_bf16", action="store_true", help="Use BF16 autocast for evaluation on supported CUDA GPUs")
     parser.add_argument("--lora_rank", type=int, default=32)
     parser.add_argument("--lora_alpha", type=int, default=64)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
