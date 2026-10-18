@@ -2,6 +2,7 @@
 """Controlled-extrapolation LoRA fine-tuning for mutation-order splits.
 
 For lower GPU memory use, opt into --gradient_checkpointing and --eval_bf16,
+and --sdpa_attention for ESM2 fused attention when supported by PyTorch/GPU,
 and reduce --batch_size / --eval_batch_size. Increase gradient accumulation
 to retain the desired effective training batch size. Existing defaults remain.
 """
@@ -394,6 +395,62 @@ def enable_gradient_checkpointing(model):
     print("Gradient checkpointing enabled for %d transformer blocks" % count)
 
 
+def enable_esm_sdpa(model):
+    """Use PyTorch SDPA for ESM2 self-attention without changing LoRA/state keys.
+
+    Full sequence context and rotary positions are retained. Per-head map/contact
+    and incremental-decoding requests fall back to the original implementation.
+    PyTorch selects the available kernel; CUDA fused-kernel support is hardware
+    and dtype dependent. This option does not install external FlashAttention.
+    """
+    if model.__class__.__name__ != "ESM2":
+        raise ValueError("--sdpa_attention currently supports ESM2 backbones only")
+
+    def sdpa_forward(attention):
+        original_forward = attention.forward
+
+        def forward(query, key, value, key_padding_mask=None, incremental_state=None, need_weights=True,
+                    static_kv=False, attn_mask=None, before_softmax=False, need_head_weights=False):
+            if (query is not key or query is not value or incremental_state is not None or static_kv
+                    or attn_mask is not None or before_softmax or need_head_weights or attention.onnx_trace):
+                return original_forward(query, key, value, key_padding_mask=key_padding_mask,
+                                        incremental_state=incremental_state, need_weights=need_weights, static_kv=static_kv,
+                                        attn_mask=attn_mask, before_softmax=before_softmax, need_head_weights=need_head_weights)
+            length, batch, width = query.shape
+            heads, head_dim = attention.num_heads, attention.head_dim
+            q = (attention.q_proj(query) * attention.scaling).reshape(length, batch * heads, head_dim).transpose(0, 1)
+            k = attention.k_proj(key).reshape(length, batch * heads, head_dim).transpose(0, 1)
+            v = attention.v_proj(value).reshape(length, batch * heads, head_dim).transpose(0, 1)
+            if attention.rot_emb is not None:
+                q, k = attention.rot_emb(q, k)
+            # Rotary caches are FP32; return q/k to the projected dtype so BF16
+            # training/evaluation remains eligible for fused attention kernels.
+            q, k = q.to(v.dtype).reshape(batch, heads, length, head_dim), k.to(v.dtype).reshape(batch, heads, length, head_dim)
+            v = v.reshape(batch, heads, length, head_dim)
+            # SDPA boolean masks use True for allowed keys, opposite to ESM.
+            mask = None if key_padding_mask is None else ~key_padding_mask.bool()[:, None, None, :]
+            attended = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, dropout_p=attention.dropout if attention.training else 0.0, scale=1.0
+            )  # q already includes ESM's head-dimension scaling.
+            attended = attended.permute(2, 0, 1, 3).reshape(length, batch, width)
+            # ESM2 discards averaged attention maps unless need_head_weights=True.
+            return attention.out_proj(attended), None
+
+        return forward
+
+    count = 0
+    for layer in model.layers:
+        attention = layer.self_attn
+        if attention.bias_k is not None or attention.bias_v is not None or attention.add_zero_attn:
+            raise ValueError("--sdpa_attention requires standard ESM2 attention without extra key/value tokens")
+        if getattr(attention, "_lora_sdpa_attention", False):
+            continue
+        attention.forward = sdpa_forward(attention)
+        attention._lora_sdpa_attention = True
+        count += 1
+    print("PyTorch SDPA enabled for %d ESM2 attention blocks (fused kernel selected when supported)" % count)
+
+
 def resolve_named_lora_targets(model, requested_targets):
     requested_targets = [str(target) for target in requested_targets]
     linear_module_names = [name for name, _module in iter_backbone_linear_modules(model)]
@@ -698,6 +755,8 @@ def initialize_plm_lora_head(
     finish_lora_initialization_equivalence(backbone, equivalence_state)
     if getattr(args, "gradient_checkpointing", False):
         enable_gradient_checkpointing(backbone.plm)
+    if getattr(args, "sdpa_attention", False):
+        enable_esm_sdpa(backbone.plm)
     hidden_dim = infer_hidden_dim(backbone)
     head = MLPScorer(input_dim=int(hidden_dim), output_dim=int(output_dim), hidden_layers=[64], dropout=0.0).to(device)
     for param in head.parameters():
@@ -1111,6 +1170,7 @@ def print_run_config(args, device):
     print("  gradient_accumulation_steps: %d" % args.gradient_accumulation_steps)
     print("  gradient_checkpointing: %s" % getattr(args, "gradient_checkpointing", False))
     print("  eval_bf16: %s" % (getattr(args, "eval_bf16", False) and supports_bf16(device)))
+    print("  sdpa_attention: %s" % getattr(args, "sdpa_attention", False))
     print("  seed: %d" % args.seed)
     print("  device: %s" % device)
     print("  bf16_supported: %s" % supports_bf16(device))
@@ -1155,6 +1215,7 @@ def parse_args():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
     parser.add_argument("--gradient_checkpointing", action="store_true", help="Recompute transformer blocks in backward to reduce training memory")
     parser.add_argument("--eval_bf16", action="store_true", help="Use BF16 autocast for evaluation on supported CUDA GPUs")
+    parser.add_argument("--sdpa_attention", action="store_true", help="Use PyTorch SDPA for ESM2; permits fused attention kernels on supported GPUs")
     parser.add_argument("--lora_rank", type=int, default=32)
     parser.add_argument("--lora_alpha", type=int, default=64)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
