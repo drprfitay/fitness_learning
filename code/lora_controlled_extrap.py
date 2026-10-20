@@ -5,6 +5,8 @@ For lower GPU memory use, opt into --gradient_checkpointing and --eval_bf16,
 and --sdpa_attention for ESM2 fused attention when supported by PyTorch/GPU,
 and reduce --batch_size / --eval_batch_size. Increase gradient accumulation
 to retain the desired effective training batch size. Existing defaults remain.
+Use --classifier for labels above the dataset median (ties are class 0).
+GFP/inactive labels always use 1 - inactive, without median thresholding.
 """
 
 from __future__ import annotations
@@ -233,15 +235,17 @@ def infer_dataset_spec(dataset):
     raise ValueError("unknown dataset %r; use one of %s or pass a CSV path" % (dataset, ", ".join(sorted(DATASET_CONFIGS))))
 
 
-def load_prepare_dataset(dataset):
+def load_prepare_dataset(dataset, classifier=False):
     spec = infer_dataset_spec(dataset)
+    if classifier:
+        spec.task_type = "classification"
     print("Loading dataset %s" % spec.name)
     df = pd.read_csv(spec.path)
     for column in (spec.sequence_column, spec.num_muts_column, spec.label_column):
         if column not in df.columns:
             raise ValueError("dataset %s is missing required column %r" % (spec.path, column))
     df = df.reset_index(drop=True)
-    labels = make_labels(df, spec)
+    labels = make_labels(df, spec, classifier=classifier)
     nmuts = df[spec.num_muts_column].astype(int).to_numpy()
     print("Task: %s label_column=%s sequence_column=%s num_muts_column=%s" % (
         spec.task_type, spec.label_column, spec.sequence_column, spec.num_muts_column
@@ -249,8 +253,25 @@ def load_prepare_dataset(dataset):
     return spec, df, labels, nmuts
 
 
-def make_labels(df, spec):
+def make_labels(df, spec, classifier=False):
+    """GFP is 1-inactive; --classifier splits other assays at the dataset median."""
     values = df[spec.label_column]
+    if spec.label_column == "inactive":
+        activity = values.to_numpy(dtype=float)
+        if not np.isfinite(activity).all() or not np.isin(activity, [0, 1]).all():
+            raise ValueError("inactive labels must contain only finite 0/1 values")
+        print("Classification labels: 1 - inactive (functional=1)")
+        return 1 - activity.astype(int)
+    if classifier:
+        activity = values.to_numpy(dtype=float)
+        if not np.isfinite(activity).all():
+            raise ValueError("--classifier requires finite activity values")
+        threshold = float(np.median(activity))
+        labels = (activity > threshold).astype(int)
+        if len(np.unique(labels)) < 2:
+            raise ValueError("--classifier median split produced only one class")
+        print("Classification labels: %s > dataset median %.8g; values <= median are class 0" % (spec.label_column, threshold))
+        return labels
     if spec.task_type == "regression":
         return values.astype(float).to_numpy()
     labels = pd.Categorical(values).codes.astype(int)
@@ -1201,6 +1222,7 @@ def build_extrapolative_validation_indices(nmuts, train_mutations, seed):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--classifier", action="store_true", help="Classify activity > dataset median as 1, otherwise 0; GFP always uses 1-inactive")
     parser.add_argument("--model_name", required=True)
     parser.add_argument("--train_mutations", type=int, required=True)
     parser.add_argument("--output_path", required=True)
@@ -1263,7 +1285,7 @@ def main():
     device = resolve_device(args.device)
     print("Using device: %s" % device)
     print_run_config(args, device)
-    spec, df, labels, nmuts = load_prepare_dataset(args.dataset)
+    spec, df, labels, nmuts = load_prepare_dataset(args.dataset, classifier=args.classifier)
     train_idx, test_orders = build_controlled_indices(nmuts, args.train_mutations)
     print("Training orders: <= %d" % int(args.train_mutations))
     print("N train: %d" % len(train_idx))
